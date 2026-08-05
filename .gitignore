@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/dist/
+ctfd-mcp
+ctfd-mcp.exe
+
+# Downloaded challenge attachments — never commit event material
+/downloads/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,22 @@
+# Normalize line endings so the repository always stores LF, regardless of the
+# platform a contributor works on. Without this, committing from Windows stores
+# CRLF and every file reads as modified when cloned on Linux or macOS.
+* text=auto eol=lf
+
+# Go tooling is LF-only; gofmt disagreeing with the checkout is a needless
+# source of diff noise.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Recipes are tab-sensitive and must never be munged.
+Makefile text eol=lf
+
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+# Compiled output, should it ever be committed deliberately.
+*.exe binary
+*.zip binary
