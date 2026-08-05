@@ -518,7 +518,13 @@ CTFd rejects challenge reads and submissions with 403 until the account joins a 
 go test ./...              # full suite, including a subprocess end-to-end test
 go test -short ./...       # skips the tests that compile a binary
 go vet ./...
+make race                  # needs cgo and a C compiler
 ```
+
+CI runs on every push and pull request: build, vet, and tests on Linux **and**
+Windows (Windows matters — `internal/ctfd/download.go` has real platform-specific
+filename handling), plus the race detector, `gofmt`, `go mod tidy`, `staticcheck`,
+and a cross-compile of all six release targets.
 
 The tests run entirely against `httptest` stand-ins built from CTFd's actual
 response shapes; nothing touches a real instance. `cmd/ctfd-mcp/e2e_test.go`

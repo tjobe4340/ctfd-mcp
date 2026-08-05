@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: nothing here needs write access to the repository.
+permissions:
+  contents: read
+
+# A new push supersedes an in-flight run for the same ref. This repository is
+# private, so Actions minutes come out of a quota; cancelling stale runs keeps
+# that from being spent on results nobody will read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is the baseline. Windows earns its place because
+        # internal/ctfd/download.go carries real platform-specific logic --
+        # reserved device names, invalid filename characters, path separators --
+        # and that is exactly the code that decides where downloaded files land.
+        #
+        # macOS is deliberately absent: the code has no Darwin-specific paths,
+        # and macOS runners bill at 10x the Linux rate on a private repo. The
+        # cross-compile job below still proves it builds for Darwin.
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Track the toolchain declared in go.mod rather than pinning a second
+          # version here that can silently drift out of step with it.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        # Includes the end-to-end test, which compiles the real binary and
+        # drives it over stdio the way an MCP client does.
+        run: go test -count=1 ./...
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with race detector
+        # The race detector needs cgo and a C toolchain, which the development
+        # machine for this project does not have -- so this job is the only
+        # place the concurrency in the client (cached CSRF nonce, login
+        # serialization, the TTL cache, the attempt log) is actually checked
+        # for data races.
+        env:
+          CGO_ENABLED: 1
+        run: go test -race -count=1 ./internal/...
+
+  lint:
+    name: Format and static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        # gofmt -l lists files needing formatting and exits 0 either way, so the
+        # output has to be inspected to turn it into a failure.
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo
+            echo "Run: gofmt -w ."
+            exit 1
+          fi
+          echo "All files are gofmt-formatted."
+
+      - name: go mod tidy is up to date
+        # A stale go.mod or go.sum breaks `go install` for anyone fetching the
+        # module, which would not show up in a plain build.
+        run: |
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "go.mod or go.sum is out of date. Run: go mod tidy"
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+          echo "go.mod and go.sum are tidy."
+
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+  cross:
+    name: Cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build every release target
+        # The point of shipping a static Go binary is that these all work, so a
+        # break here is a real regression even though nothing runs the output.
+        run: |
+          set -euo pipefail
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+          for target in $targets; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            echo "--> $os/$arch"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -o /dev/null ./cmd/ctfd-mcp
+          done
+          echo "All targets build."
