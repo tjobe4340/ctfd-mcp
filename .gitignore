@@ -1,8 +1,13 @@
-# Build output
+# Build output.
+#
+# These MUST stay anchored with a leading slash. An unanchored "ctfd-mcp"
+# matches at any depth and silently excludes the cmd/ctfd-mcp/ source
+# directory, which produces a repository that looks complete locally but does
+# not compile when cloned.
 /bin/
 /dist/
-ctfd-mcp
-ctfd-mcp.exe
+/ctfd-mcp
+/ctfd-mcp.exe
 
 # Downloaded challenge attachments — never commit event material
 /downloads/
