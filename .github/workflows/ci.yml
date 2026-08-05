@@ -115,10 +115,11 @@ jobs:
           echo "go.mod and go.sum are tidy."
 
       - name: staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: latest
-          install-go: false
+        # Run the tool directly rather than through dominikh/staticcheck-action,
+        # which bundles its own SHA-pinned actions/cache and drags a Node 20
+        # deprecation warning into every run. One fewer third-party action in
+        # the supply chain, and the version is pinned here where it is visible.
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
   cross:
     name: Cross-compile
