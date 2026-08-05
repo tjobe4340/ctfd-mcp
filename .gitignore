@@ -17,3 +17,8 @@ coverage.*
 .idea/
 *.swp
 .DS_Store
+
+# Local agent/assistant workspace config — machine-specific, not part of the project
+.claude/
+.aider*
+.cursor/
