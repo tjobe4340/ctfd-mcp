@@ -46,7 +46,7 @@ What it does **not** do:
 
 | | |
 | --- | --- |
-| Tools | 23 (14 read-only, 9 writing) |
+| Tools | 23 (14 read-only, 9 writing), or 11 in lite |
 | Auth | API token, username + password, or session cookie |
 | CTFd | 3.6.x, 3.7.x, 3.8.x |
 | Runtime deps | none — one static binary |
@@ -195,6 +195,7 @@ Submission is off unless you ask for it. Add to the `env` block:
       "env": {
         "CTFD_URL": "https://ctf.example.com",
         "CTFD_TOKEN": "ctfd_your_token_here",
+        "CTFD_LITE": "true",
         "CTFD_ALLOW_SUBMIT": "true",
         "CTFD_ALLOW_UNLOCK": "true",
         "CTFD_ALLOW_DOWNLOAD": "true",
@@ -216,8 +217,31 @@ ctfd-mcp -version
 
 ## Tools
 
-23 tools. Read-only unless marked otherwise. Tools marked *3.8+* use endpoints CTFd
-added in 3.8; against an older instance they say so rather than failing.
+23 tools in the default profile, **11 in lite**. Read-only unless marked otherwise.
+Tools marked *3.8+* use endpoints CTFd added in 3.8; against an older instance they
+say so rather than failing.
+
+### Lite profile
+
+```
+CTFD_LITE=true
+```
+
+Registers only what is needed to play — identity, challenges, flags, hints,
+attachments, the scoreboard, and your own history:
+
+`ctfd_whoami` · `ctfd_my_progress` · `ctfd_list_challenges` · `ctfd_get_challenge` ·
+`ctfd_submit_flag` · `ctfd_my_submissions` · `ctfd_session_report` ·
+`ctfd_get_hint` · `ctfd_unlock_hint` · `ctfd_download_files` · `ctfd_scoreboard`
+
+Left out: the outward-looking reads (other competitors' profiles, per-challenge
+solver lists, score timelines, announcements), the CTFd 3.8 extras (official
+solutions, ratings), and account administration (tokens, profile, team membership).
+
+This is worth using. Every tool definition is sent to the model on connect and
+competes for its attention when it picks one, so a smaller, sharper set measurably
+improves tool selection — and nothing in the list above is needed to read a
+challenge, work it, and submit a flag.
 
 ### Orientation
 
@@ -241,12 +265,12 @@ added in 3.8; against an older instance they say so rather than failing.
 | --- | --- | --- |
 | `ctfd_submit_flag` | **yes** | Submit a flag. Gated behind `CTFD_ALLOW_SUBMIT`. Supports `dry_run`. Refuses duplicates and exhausted attempt budgets. |
 | `ctfd_session_report` | no | What this process has submitted so far. Flags are stored hashed, never echoed. |
-| `ctfd_get_hint` | no | Read a hint. Free and already-unlocked hints return their content. |
-| `ctfd_unlock_hint` | **yes** | Spend points on a hint. Gated behind `CTFD_ALLOW_UNLOCK` **and** an explicit `confirm: true`. |
+| `ctfd_get_hint` | no | Read a hint. Free and already-unlocked hints return their content directly. |
+| `ctfd_unlock_hint` | **yes** | Unlock a hint. **Free hints need no gate and no confirmation** — there is nothing to spend. A hint that costs points keeps `CTFD_ALLOW_UNLOCK` and `confirm: true`. |
 | `ctfd_download_files` | **yes** | Save challenge attachments into a sandbox directory. Gated behind `CTFD_ALLOW_DOWNLOAD`. |
 | `ctfd_get_solution` | **yes** | *3.8+* — read the organizers' official writeup. Most unlock only after you solve the challenge. Free, but CTFd records that you viewed it, so revealing needs `unlock: true`. |
 | `ctfd_rate_challenge` | **yes** | *3.8+* — thumbs up or down plus optional written feedback. CTFd requires you to have solved it first. |
-| `ctfd_my_submissions` | no | *3.8+* — your own submissions **including the exact strings you typed**, which `ctfd_my_progress` does not show. Most events leave this disabled. |
+| `ctfd_my_submissions` | no | Everything you have previously submitted, newest first. Where the event allows it, this includes **the exact strings you typed**; otherwise it falls back to your solve and failure history so you can still see what was attempted. |
 
 ### Situational awareness
 
@@ -323,8 +347,14 @@ Plus exactly one credential set:
 | Variable | Flag | Description |
 | --- | --- | --- |
 | `CTFD_ALLOW_SUBMIT` | `-allow-submit` | Permit flag submission. |
-| `CTFD_ALLOW_UNLOCK` | `-allow-unlock` | Permit spending points to unlock hints. |
+| `CTFD_ALLOW_UNLOCK` | `-allow-unlock` | Permit spending points to unlock hints. Does not apply to free hints, which cost nothing. |
 | `CTFD_ALLOW_DOWNLOAD` | `-allow-download` | Permit writing attachments to disk. Requires `CTFD_DOWNLOAD_DIR`. |
+
+### Profile
+
+| Variable | Flag | Default | Description |
+| --- | --- | --- | --- |
+| `CTFD_LITE` | `-lite` | `false` | Register only the 11 core play tools. See [Lite profile](#lite-profile). |
 
 ### Everything else
 
@@ -372,9 +402,12 @@ no attempts remain, nothing is sent. Because CTFd derives its `attempts` field f
 all submissions but enforces the limit against failures only, the two can disagree,
 so this refusal is overridable with `force: true`.
 
-**Hint unlocks need explicit confirmation.** `CTFD_ALLOW_UNLOCK` is not enough;
+**Paid hint unlocks need explicit confirmation.** `CTFD_ALLOW_UNLOCK` is not enough;
 `confirm: true` must be passed on the call itself. Without it, the tool reports the
-price instead of paying it.
+price instead of paying it. Gating is driven by the cost CTFd reports for that
+specific hint, not by an assumption about the event — so a **free** hint skips both
+the gate and the confirmation, while a hint that does cost points keeps every
+safeguard. If a hint's cost cannot be read, it is treated as paid.
 
 **Challenge content is treated as untrusted.** Descriptions, hints, and announcements
 are authored by event organizers — anyone who can write a challenge can write

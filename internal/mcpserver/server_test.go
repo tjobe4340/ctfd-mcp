@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -113,7 +115,7 @@ func newFakeCTFd(t *testing.T) *fakeCTFd {
 		writeJSON(w, 200, `{"success":true,"data":[{"id":1,"name":"Think small","value":-10,"category":"hints","date":"2026-08-01T09:30:00"}]}`)
 	})
 	mux.HandleFunc("/api/v1/users/me/fails", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, `{"success":true,"data":[]}`)
+		writeJSON(w, 200, `{"success":true,"data":[{"id":3,"challenge_id":1,"date":"2026-08-01T08:30:00","type":"incorrect","challenge":{"id":1,"name":"Baby RSA","category":"crypto","value":100}}]}`)
 	})
 	mux.HandleFunc("/api/v1/hints/5", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"success":true,"data":{"id":5,"title":"Think small","type":"standard","challenge_id":1,"cost":10}}`)
@@ -355,6 +357,108 @@ func TestReadmeToolCountsAreAccurate(t *testing.T) {
 	}
 	if writing != wantWriting {
 		t.Errorf("writing tools = %d, README says %d", writing, wantWriting)
+	}
+}
+
+// liteTools is the exact tool set the lite profile must expose: everything
+// needed to read a challenge, work it, and submit a flag, plus your own
+// history. Asserting the set exactly, rather than just a count, catches a tool
+// silently moving between profiles.
+var liteTools = []string{
+	"ctfd_whoami", "ctfd_my_progress",
+	"ctfd_list_challenges", "ctfd_get_challenge",
+	"ctfd_submit_flag", "ctfd_session_report", "ctfd_my_submissions",
+	"ctfd_get_hint", "ctfd_unlock_hint", "ctfd_download_files",
+	"ctfd_scoreboard",
+}
+
+// droppedInLite are the tools the lite profile must NOT register.
+var droppedInLite = []string{
+	"ctfd_lookup_account", "ctfd_challenge_solvers", "ctfd_get_solution",
+	"ctfd_rate_challenge", "ctfd_score_history", "ctfd_notifications",
+	"ctfd_list_tokens", "ctfd_create_token", "ctfd_revoke_token",
+	"ctfd_update_profile", "ctfd_my_team", "ctfd_join_or_create_team",
+}
+
+func TestLiteProfileRegistersExactlyTheCoreTools(t *testing.T) {
+	f := newFakeCTFd(t)
+	s := testDeps(t, f, func(d *Deps) { d.Lite = true })
+	sess := connect(t, s)
+
+	res, err := sess.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+	}
+	for _, name := range liteTools {
+		if !got[name] {
+			t.Errorf("lite profile is missing %s", name)
+		}
+	}
+	for _, name := range droppedInLite {
+		if got[name] {
+			t.Errorf("lite profile should not register %s", name)
+		}
+	}
+	if len(res.Tools) != len(liteTools) {
+		var extra []string
+		for name := range got {
+			if !slices.Contains(liteTools, name) {
+				extra = append(extra, name)
+			}
+		}
+		sort.Strings(extra)
+		t.Errorf("lite registered %d tools, want %d; unexpected: %v", len(res.Tools), len(liteTools), extra)
+	}
+}
+
+// TestLiteToolsNeverReferenceDroppedTools guards the failure mode that makes a
+// reduced tool set worse than useless: a tool telling the model to call
+// something that is not registered.
+func TestLiteToolsNeverReferenceDroppedTools(t *testing.T) {
+	f := newFakeCTFd(t)
+	s := testDeps(t, f, func(d *Deps) { d.Lite = true })
+	sess := connect(t, s)
+
+	res, err := sess.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		for _, dropped := range droppedInLite {
+			if strings.Contains(tool.Description, dropped) {
+				t.Errorf("%s points the model at %s, which lite does not register", tool.Name, dropped)
+			}
+		}
+	}
+	for _, dropped := range droppedInLite {
+		if strings.Contains(s.instructions(), dropped) {
+			t.Errorf("server instructions reference %s, which lite does not register", dropped)
+		}
+	}
+}
+
+func TestFullProfileStillRegistersEverything(t *testing.T) {
+	f := newFakeCTFd(t)
+	s := testDeps(t, f, nil) // Lite defaults to false
+	sess := connect(t, s)
+
+	res, err := sess.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+	}
+	for _, name := range append(append([]string{}, liteTools...), droppedInLite...) {
+		if !got[name] {
+			t.Errorf("full profile is missing %s", name)
+		}
 	}
 }
 
@@ -958,7 +1062,11 @@ func TestRateChallengeValidatesInput(t *testing.T) {
 	}
 }
 
-func TestMySubmissionsExplainsDisabledSetting(t *testing.T) {
+// TestMySubmissionsFallsBackWhenRawEndpointUnavailable covers the common case:
+// view_self_submissions is off by default, so most events cannot serve the raw
+// endpoint. Knowing what was already tried matters too much to give up on, so
+// the tool reconstructs the history from solves and fails instead.
+func TestMySubmissionsFallsBackWhenRawEndpointUnavailable(t *testing.T) {
 	f := newFakeCTFd(t)
 	f.selfSubmissions403 = true // view_self_submissions off, CTFd's default
 	s := testDeps(t, f, nil)
@@ -966,11 +1074,95 @@ func TestMySubmissionsExplainsDisabledSetting(t *testing.T) {
 
 	text, res := callText(t, sess, "ctfd_my_submissions", nil)
 	if res.IsError {
-		t.Fatalf("a disabled setting should be explained, not raised: %s", text)
+		t.Fatalf("should fall back, not fail: %s", text)
 	}
-	if !strings.Contains(text, "view_self_submissions") {
-		t.Errorf("the explanation should name the setting:\n%s", text)
+	// The fake has one solve (challenge 2) and one fail (challenge 1).
+	if !strings.Contains(text, "CORRECT") {
+		t.Errorf("the solve should appear:\n%s", text)
 	}
+	if !strings.Contains(text, "wrong") {
+		t.Errorf("the failed attempt should appear:\n%s", text)
+	}
+	// It must be honest that the submitted text is not recoverable here.
+	if !strings.Contains(text, "does not expose the text") {
+		t.Errorf("should say the submitted strings are unavailable:\n%s", text)
+	}
+}
+
+func TestMySubmissionsFallbackFiltersByChallenge(t *testing.T) {
+	f := newFakeCTFd(t)
+	f.selfSubmissions403 = true
+	s := testDeps(t, f, nil)
+	sess := connect(t, s)
+
+	// Challenge 1 has only the failed attempt in the fake.
+	text, res := callText(t, sess, "ctfd_my_submissions", map[string]any{"challenge_id": 1})
+	if res.IsError {
+		t.Fatalf("ctfd_my_submissions failed: %s", text)
+	}
+	if !strings.Contains(text, "wrong") {
+		t.Errorf("challenge 1's failed attempt should appear:\n%s", text)
+	}
+	if strings.Contains(text, "CORRECT") {
+		t.Errorf("challenge 2's solve should be filtered out:\n%s", text)
+	}
+}
+
+// TestFreeHintNeedsNoGateOrConfirmation covers the case where an event charges
+// nothing for hints. There is no score to protect, so neither the
+// CTFD_ALLOW_UNLOCK gate nor an explicit confirmation should stand in the way.
+func TestFreeHintNeedsNoGateOrConfirmation(t *testing.T) {
+	f := newFakeCTFd(t)
+	// Hint 6 costs 0 and the fake returns its content directly, exactly as
+	// CTFd does: the locked view only applies when hint.cost is non-zero.
+	s := testDeps(t, f, nil) // AllowUnlock deliberately false
+	sess := connect(t, s)
+
+	text, res := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 6})
+	if res.IsError {
+		t.Fatalf("a free hint should not error: %s", text)
+	}
+	if strings.Contains(text, "disabled") {
+		t.Errorf("the unlock gate should not apply to a free hint:\n%s", text)
+	}
+	if strings.Contains(text, "confirm was not set") {
+		t.Errorf("a free hint should not require confirmation:\n%s", text)
+	}
+	if !strings.Contains(text, "e is tiny") {
+		t.Errorf("the hint content should be returned:\n%s", text)
+	}
+	if !strings.Contains(text, "no points were spent") {
+		t.Errorf("should state that nothing was spent:\n%s", text)
+	}
+}
+
+// TestPaidHintStillRequiresGateAndConfirmation is the other half: gating is
+// driven by the cost CTFd reports, so a hint that does cost points keeps every
+// safeguard even though free ones bypass them.
+func TestPaidHintStillRequiresGateAndConfirmation(t *testing.T) {
+	f := newFakeCTFd(t)
+
+	t.Run("gate still applies", func(t *testing.T) {
+		s := testDeps(t, f, nil) // AllowUnlock false
+		sess := connect(t, s)
+		// Hint 5 costs 10 points.
+		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5})
+		if !strings.Contains(text, "disabled") {
+			t.Errorf("a paid hint must still respect the gate:\n%s", text)
+		}
+	})
+
+	t.Run("confirmation still required", func(t *testing.T) {
+		s := testDeps(t, f, func(d *Deps) { d.AllowUnlock = true })
+		sess := connect(t, s)
+		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5})
+		if !strings.Contains(text, "confirm was not set") {
+			t.Errorf("a paid hint must still require confirmation:\n%s", text)
+		}
+		if !strings.Contains(text, "10 points") {
+			t.Errorf("the prompt should state the cost:\n%s", text)
+		}
+	})
 }
 
 func TestMySubmissionsShowsWhatWasTyped(t *testing.T) {

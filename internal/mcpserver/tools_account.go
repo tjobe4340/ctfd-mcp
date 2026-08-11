@@ -50,13 +50,6 @@ func (s *Server) registerAccountTools() {
 			"not just what this session did.",
 	}, s.myProgress)
 
-	addTool(s, &mcp.Tool{
-		Name:        "ctfd_lookup_account",
-		Title:       "Look up an account",
-		Annotations: readOnly("Look up an account"),
-		Description: "Look up another competitor or team by ID, or search by name. Returns the profile and, optionally, " +
-			"their public solves - useful for seeing which challenges a leading team has already cleared.",
-	}, s.lookupAccount)
 }
 
 func (s *Server) whoami(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, WhoAmIOut, error) {

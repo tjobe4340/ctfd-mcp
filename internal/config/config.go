@@ -63,6 +63,16 @@ type Config struct {
 	Username string
 	Password string
 
+	// Lite selects a reduced tool set covering only what is needed to play:
+	// identity, challenges, flags, hints, attachments, scoreboard, and your own
+	// history. Organizer-adjacent and account-management tools are not
+	// registered.
+	//
+	// Fewer tools is not only about clutter. Every tool definition is sent to
+	// the model on connect and competes for its attention, so a smaller,
+	// sharper set measurably improves tool selection.
+	Lite bool
+
 	// AllowSubmit gates flag submission. Submissions are irreversible, count
 	// against per-challenge attempt limits, and are visible to organizers.
 	AllowSubmit bool
@@ -145,6 +155,7 @@ func Load(args []string, stderr io.Writer) (*Config, error) {
 		username = fs.String("username", "", "CTFd username or email for password login (env CTFD_USERNAME)")
 		password = fs.String("password", "", "CTFd password (env CTFD_PASSWORD)")
 
+		lite          = fs.Bool("lite", false, "register only the core play tools (env CTFD_LITE)")
 		allowSubmit   = fs.Bool("allow-submit", false, "permit flag submission (env CTFD_ALLOW_SUBMIT)")
 		allowUnlock   = fs.Bool("allow-unlock", false, "permit spending points to unlock hints (env CTFD_ALLOW_UNLOCK)")
 		allowDownload = fs.Bool("allow-download", false, "permit writing attachments to disk (env CTFD_ALLOW_DOWNLOAD)")
@@ -201,6 +212,7 @@ func Load(args []string, stderr io.Writer) (*Config, error) {
 		SubmitRateLimit:  pickFloat(set, "submit-rate-limit", *submitRateLimit, "CTFD_SUBMIT_RATE_LIMIT", DefaultSubmitRateLimit),
 		Timeout:          pickDuration(set, "timeout", *timeout, "CTFD_TIMEOUT", DefaultTimeout),
 		CacheTTL:         pickDuration(set, "cache-ttl", *cacheTTL, "CTFD_CACHE_TTL", DefaultCacheTTL),
+		Lite:             pickBool(set, "lite", *lite, "CTFD_LITE", false),
 		AllowSubmit:      pickBool(set, "allow-submit", *allowSubmit, "CTFD_ALLOW_SUBMIT", false),
 		AllowUnlock:      pickBool(set, "allow-unlock", *allowUnlock, "CTFD_ALLOW_UNLOCK", false),
 		AllowDownload:    pickBool(set, "allow-download", *allowDownload, "CTFD_ALLOW_DOWNLOAD", false),
@@ -360,6 +372,7 @@ func (c *Config) Redacted() map[string]any {
 	return map[string]any{
 		"base_url":          c.BaseURL.String(),
 		"auth":              c.authDescription(),
+		"lite":              c.Lite,
 		"allow_submit":      c.AllowSubmit,
 		"allow_unlock":      c.AllowUnlock,
 		"allow_download":    c.AllowDownload,
@@ -395,6 +408,7 @@ const envHelp = `  CTFD_URL                 CTFd base URL (required)
   CTFD_TOKEN               API token from Settings > Access Tokens
   CTFD_SESSION             session cookie value
                            (set exactly one of: username+password, token, session)
+  CTFD_LITE                "true" for the reduced core-play tool set
   CTFD_ALLOW_SUBMIT        "true" to permit flag submission
   CTFD_ALLOW_UNLOCK        "true" to permit spending points on hints
   CTFD_ALLOW_DOWNLOAD      "true" to permit writing attachments to disk

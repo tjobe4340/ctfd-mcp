@@ -360,6 +360,64 @@ func writeJSONBody(w http.ResponseWriter, status int, body string) {
 	_, _ = w.Write([]byte(body))
 }
 
+// TestLiteProfileOverStdio confirms CTFD_LITE actually reaches the running
+// server, since the flag is only useful if the process wires it through.
+func TestLiteProfileOverStdio(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a binary; skipped in short mode")
+	}
+
+	ctfd := newStubCTFd(t)
+	bin := buildBinary(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(),
+		"CTFD_URL="+ctfd.URL,
+		"CTFD_TOKEN=ctfd_"+strings.Repeat("a", 64),
+		"CTFD_LITE=true",
+		"CTFD_LOG_LEVEL=error",
+	)
+	cmd.Stderr = os.Stderr
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "e2e-lite", Version: "1"}, nil)
+	sess, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatalf("connecting to the server subprocess: %v", err)
+	}
+	defer sess.Close()
+
+	res, err := sess.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(res.Tools) != 11 {
+		names := make([]string, 0, len(res.Tools))
+		for _, tool := range res.Tools {
+			names = append(names, tool.Name)
+		}
+		t.Errorf("lite advertised %d tools, want 11: %v", len(res.Tools), names)
+	}
+	for _, tool := range res.Tools {
+		switch tool.Name {
+		case "ctfd_notifications", "ctfd_my_team", "ctfd_create_token", "ctfd_score_history":
+			t.Errorf("%s should not be registered in lite", tool.Name)
+		}
+	}
+	// The core play loop must still be present.
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+	}
+	for _, need := range []string{"ctfd_list_challenges", "ctfd_submit_flag", "ctfd_get_hint", "ctfd_my_submissions"} {
+		if !got[need] {
+			t.Errorf("lite is missing the core tool %s", need)
+		}
+	}
+}
+
 func TestBinaryRejectsBadConfiguration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary; skipped in short mode")

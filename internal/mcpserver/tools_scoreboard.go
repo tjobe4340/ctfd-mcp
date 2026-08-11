@@ -48,14 +48,6 @@ func (s *Server) registerScoreboardTools() {
 			"CTFd caches this server-side for 60 seconds, so polling faster than that returns identical data.",
 	}, s.scoreboard)
 
-	addTool(s, &mcp.Tool{
-		Name:        "ctfd_score_history",
-		Title:       "Score history",
-		Annotations: readOnly("Score history"),
-		Description: "Scoring timelines for the top accounts: every solve and award with its timestamp and point value. " +
-			"Use this to see which challenges the leaders solved and in what order, or to judge how fast the field is moving. " +
-			"Entries with no challenge_id are point awards rather than solves.",
-	}, s.scoreHistory)
 }
 
 func (s *Server) scoreboard(ctx context.Context, _ *mcp.CallToolRequest, in ScoreboardIn) (*mcp.CallToolResult, ScoreboardOut, error) {

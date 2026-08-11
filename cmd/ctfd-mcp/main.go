@@ -84,6 +84,7 @@ func run(args []string) error {
 		Config:        cfg,
 		Logger:        logger.With("component", "mcp"),
 		Redactor:      red,
+		Lite:          cfg.Lite,
 		AllowSubmit:   cfg.AllowSubmit,
 		AllowUnlock:   cfg.AllowUnlock,
 		AllowDownload: cfg.AllowDownload,

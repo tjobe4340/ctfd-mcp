@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -86,13 +87,20 @@ func (s *Server) registerSolutionTools() {
 			"Requires CTFd 3.8 or newer, and the organizers must have ratings enabled.",
 	}, s.rateChallenge)
 
+}
+
+// registerHistoryTools registers the caller's own submission history. It is
+// present in both profiles: knowing what has already been tried is core to
+// playing, not an extra.
+func (s *Server) registerHistoryTools() {
 	addTool(s, &mcp.Tool{
 		Name:        "ctfd_my_submissions",
-		Title:       "My raw submissions",
-		Annotations: readOnly("My raw submissions"),
-		Description: "Your own submission history including the exact strings you submitted, which ctfd_my_progress does not show. " +
-			"Useful for seeing precisely what was already tried on a challenge. " +
-			"Many events leave this disabled, in which case it reports that rather than failing.",
+		Title:       "My past submissions",
+		Annotations: readOnly("My past submissions"),
+		Description: "Everything you have previously submitted, correct and incorrect, newest first. " +
+			"Check this before submitting so you do not spend an attempt on a string you already tried. " +
+			"Where the event allows it this includes the exact text you submitted; otherwise it falls back to " +
+			"your solve and failure history, which still shows which challenges you attempted and when.",
 	}, s.mySubmissions)
 }
 
@@ -232,18 +240,13 @@ func (s *Server) mySubmissions(ctx context.Context, _ *mcp.CallToolRequest, in M
 
 	subs, err := s.deps.Client.MySubmissions(ctx, in.ChallengeID)
 	if err != nil {
-		switch {
-		case ctfd.IsForbidden(err):
-			return textResult(
-				"This event does not let players view their own raw submissions.\n\n" +
-					"CTFd keeps that behind the view_self_submissions setting, which is off by default. " +
-					"Use ctfd_my_progress for solves and awards, or ctfd_session_report for what this session submitted.",
-			), out, nil
-		case ctfd.IsNotFound(err):
-			return textResult(
-				"This CTFd instance does not expose per-player submission history; it predates CTFd 3.8.\n\n" +
-					"Use ctfd_my_progress instead.",
-			), out, nil
+		// The raw endpoint needs CTFd 3.8 and the view_self_submissions
+		// setting, which is off by default, so most events cannot serve it.
+		// Knowing what you already tried is too important to give up on: fall
+		// back to the solve and failure lists, which every 3.x exposes to the
+		// account that owns them.
+		if ctfd.IsForbidden(err) || ctfd.IsNotFound(err) {
+			return s.submissionsFromSolvesAndFails(ctx, in.ChallengeID)
 		}
 		return nil, out, err
 	}
@@ -256,6 +259,7 @@ func (s *Server) mySubmissions(ctx context.Context, _ *mcp.CallToolRequest, in M
 			Date:        formatDate(sub.Date),
 		})
 	}
+	sortSubmissionsNewestFirst(out.Submissions)
 	out.Count = len(out.Submissions)
 
 	var b strings.Builder
@@ -264,7 +268,7 @@ func (s *Server) mySubmissions(ctx context.Context, _ *mcp.CallToolRequest, in M
 		b.WriteString("No submissions recorded.\n")
 		return textResult(b.String()), out, nil
 	}
-	fmt.Fprintf(&b, "%d %s.\n\n", out.Count, plural(out.Count, "submission", "submissions"))
+	fmt.Fprintf(&b, "%d %s, newest first.\n\n", out.Count, plural(out.Count, "submission", "submissions"))
 	rows := make([][]string, 0, len(out.Submissions))
 	for _, sub := range out.Submissions {
 		verdict := "wrong"
@@ -275,4 +279,74 @@ func (s *Server) mySubmissions(ctx context.Context, _ *mcp.CallToolRequest, in M
 	}
 	b.WriteString(table([]string{"Challenge", "Submitted", "Result", "When"}, rows))
 	return textResult(b.String()), out, nil
+}
+
+// submissionsFromSolvesAndFails reconstructs submission history from the
+// per-account solve and failure lists.
+//
+// This loses the submitted text, which CTFd only exposes through the endpoint
+// that was unavailable, but it preserves what matters most before submitting
+// again: which challenges were attempted, how many times, and whether any
+// attempt succeeded.
+func (s *Server) submissionsFromSolvesAndFails(ctx context.Context, challengeID int) (*mcp.CallToolResult, MySubmissionsOut, error) {
+	var out MySubmissionsOut
+
+	solves, serr := s.deps.Client.MySolves(ctx)
+	if serr != nil {
+		return nil, out, serr
+	}
+	// A failure to read fails is not fatal; solves alone are still useful.
+	fails, ferr := s.deps.Client.MyFails(ctx)
+	if ferr != nil {
+		s.log.Debug("could not read failed submissions", "error", s.red.Error(ferr))
+	}
+
+	add := func(subs []ctfd.Submission, correct bool) {
+		for _, sub := range subs {
+			if challengeID > 0 && sub.ChallengeID != challengeID {
+				continue
+			}
+			out.Submissions = append(out.Submissions, OwnSubmissionO{
+				ChallengeID: sub.ChallengeID,
+				Correct:     correct,
+				Date:        formatDate(sub.Date),
+			})
+		}
+	}
+	add(solves, true)
+	add(fails, false)
+	sortSubmissionsNewestFirst(out.Submissions)
+	out.Count = len(out.Submissions)
+
+	var b strings.Builder
+	b.WriteString("# My submissions\n\n")
+	if out.Count == 0 {
+		if challengeID > 0 {
+			fmt.Fprintf(&b, "No submissions recorded for challenge %d.\n", challengeID)
+		} else {
+			b.WriteString("No submissions recorded.\n")
+		}
+		return textResult(b.String()), out, nil
+	}
+
+	fmt.Fprintf(&b, "%d %s, newest first.\n\n", out.Count, plural(out.Count, "submission", "submissions"))
+	rows := make([][]string, 0, len(out.Submissions))
+	for _, sub := range out.Submissions {
+		verdict := "wrong"
+		if sub.Correct {
+			verdict = "CORRECT"
+		}
+		rows = append(rows, []string{itoa(sub.ChallengeID), verdict, sub.Date})
+	}
+	b.WriteString(table([]string{"Challenge", "Result", "When"}, rows))
+	b.WriteString("\nThis event does not expose the text of past submissions, so the strings themselves " +
+		"are not shown - only which challenges were attempted and how each attempt ended. " +
+		"ctfd_session_report covers what this session submitted.\n")
+	return textResult(b.String()), out, nil
+}
+
+// sortSubmissionsNewestFirst orders by timestamp descending. Dates are CTFd's
+// ISO-8601 strings, already normalized by formatDate, so they sort lexically.
+func sortSubmissionsNewestFirst(subs []OwnSubmissionO) {
+	sort.SliceStable(subs, func(i, j int) bool { return subs[i].Date > subs[j].Date })
 }

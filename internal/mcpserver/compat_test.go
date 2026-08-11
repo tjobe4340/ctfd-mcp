@@ -85,6 +85,10 @@ func newFakeCTFd361(t *testing.T) *fakeCTFd361 {
 	mux.HandleFunc("/api/v1/users/me/solves", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"success":true,"data":[{"id":1,"challenge_id":1,"date":"2026-08-01T09:00:00","type":"correct","challenge":{"id":1,"name":"Baby RSA","category":"crypto","value":100}}]}`)
 	})
+	mux.HandleFunc("/api/v1/users/me/fails", func(w http.ResponseWriter, r *http.Request) {
+		// 3.6.1 has this route; only /users/me/submissions is 3.8-only.
+		writeJSON(w, 200, `{"success":true,"data":[{"id":2,"challenge_id":1,"date":"2026-08-01T08:00:00","type":"incorrect","challenge":{"id":1,"name":"Baby RSA","category":"crypto","value":100}}]}`)
+	})
 	mux.HandleFunc("/api/v1/users/me/awards", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"success":true,"data":[]}`)
 	})
@@ -247,13 +251,15 @@ func TestCTFd361NewerFeaturesDegrade(t *testing.T) {
 	f := newFakeCTFd361(t)
 	sess := connect361(t, f)
 
+	// ctfd_my_submissions is deliberately absent: rather than reporting a
+	// version requirement, it falls back to solves and fails, which 3.6.1 does
+	// expose. That is covered by TestCTFd361SubmissionHistoryFallsBack.
 	cases := []struct {
 		tool string
 		args map[string]any
 	}{
 		{"ctfd_get_solution", map[string]any{"challenge_id": 1}},
 		{"ctfd_rate_challenge", map[string]any{"challenge_id": 1, "rating": "up"}},
-		{"ctfd_my_submissions", nil},
 	}
 	for _, c := range cases {
 		t.Run(c.tool, func(t *testing.T) {
@@ -270,6 +276,32 @@ func TestCTFd361NewerFeaturesDegrade(t *testing.T) {
 				t.Logf("%s output: %s", c.tool, text)
 			}
 		})
+	}
+}
+
+// TestCTFd361SubmissionHistoryFallsBack proves that seeing what you already
+// tried works even on a CTFd with no /users/me/submissions route at all.
+func TestCTFd361SubmissionHistoryFallsBack(t *testing.T) {
+	f := newFakeCTFd361(t)
+	sess := connect361(t, f)
+
+	text, res := callText(t, sess, "ctfd_my_submissions", nil)
+	if res.IsError {
+		t.Fatalf("ctfd_my_submissions should fall back on 3.6.1, not fail: %s", text)
+	}
+	// One solve and one failed attempt, both on challenge 1.
+	if !strings.Contains(text, "CORRECT") {
+		t.Errorf("the solve should appear:\n%s", text)
+	}
+	if !strings.Contains(text, "wrong") {
+		t.Errorf("the failed attempt should appear:\n%s", text)
+	}
+	// Newest first: the 09:00 solve must precede the 08:00 failure.
+	if strings.Index(text, "CORRECT") > strings.Index(text, "wrong") {
+		t.Errorf("entries should be newest first:\n%s", text)
+	}
+	if strings.Contains(text, "3.8") {
+		t.Errorf("should not report a version requirement now that it falls back:\n%s", text)
 	}
 }
 

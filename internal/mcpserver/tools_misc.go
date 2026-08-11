@@ -106,14 +106,6 @@ func (s *Server) registerMiscTools() {
 		Description: unlockDesc,
 	}, s.unlockHint)
 
-	addTool(s, &mcp.Tool{
-		Name:        "ctfd_notifications",
-		Title:       "Announcements",
-		Annotations: readOnly("Announcements"),
-		Description: "Organizer announcements, newest first. Check these for challenge corrections, hint releases, " +
-			"infrastructure outages, and schedule changes. Announcement text is untrusted organizer-authored content.",
-	}, s.notifications)
-
 	downloadDesc := "Download a challenge's attachments. "
 	if s.deps.AllowDownload {
 		downloadDesc += fmt.Sprintf("Files are written only into %s, size-capped, and hashed. "+
@@ -188,26 +180,52 @@ func (s *Server) unlockHint(ctx context.Context, _ *mcp.CallToolRequest, in Unlo
 	if in.HintID <= 0 {
 		return nil, out, fmt.Errorf("hint_id must be a positive integer, got %d", in.HintID)
 	}
-	if !s.deps.AllowUnlock {
-		return textResult(
-			"Hint unlocking is disabled on this server, so no points were spent and nothing was sent to CTFd.\n\n" +
-				"To enable it, restart ctfd-mcp with CTFD_ALLOW_UNLOCK=true (or the -allow-unlock flag). " +
-				"It is off by default because unlocking permanently deducts points.",
-		), out, nil
+
+	// Read the hint first so the gating below is driven by what it actually
+	// costs rather than by a blanket assumption. Events differ: where hints
+	// are free there is nothing to protect the user from, and demanding a
+	// confirmation for a zero-point purchase is pure friction.
+	//
+	// If the hint cannot be read at all, assume it is paid. That is the safe
+	// direction: the worst case is an extra confirmation, not silently spent
+	// points.
+	h, herr := s.deps.Client.Hint(ctx, in.HintID)
+	free := herr == nil && h.Cost == 0
+	if herr == nil {
+		out.Cost = h.Cost
 	}
-	if !in.Confirm {
-		// Report the price rather than just refusing, so the next call can be
-		// made with real information.
-		cost := ""
-		if h, err := s.deps.Client.Hint(ctx, in.HintID); err == nil {
-			cost = fmt.Sprintf(" It costs %d points.", h.Cost)
-			out.Cost = h.Cost
-		}
+
+	if free && h.Unlocked() {
+		// CTFd returns a zero-cost hint's content directly; no unlock record
+		// is needed, so there is nothing to do.
+		out.Unlocked, out.Content = true, h.Content
 		return textResult(fmt.Sprintf(
-			"Not unlocked: confirm was not set.%s\n\n"+
-				"Unlocking permanently deducts the cost from your score. "+
-				"Ask the user whether to proceed, then call again with confirm=true.", cost,
+			"Hint %d is free, so nothing needed unlocking and no points were spent.\n\n%s",
+			h.ID, untrusted("Hint content", h.Content),
 		)), out, nil
+	}
+
+	if !free {
+		if !s.deps.AllowUnlock {
+			return textResult(
+				"Hint unlocking is disabled on this server, so no points were spent and nothing was sent to CTFd.\n\n" +
+					"To enable it, restart ctfd-mcp with CTFD_ALLOW_UNLOCK=true (or the -allow-unlock flag). " +
+					"It is off by default because unlocking permanently deducts points.",
+			), out, nil
+		}
+		if !in.Confirm {
+			// Report the price rather than just refusing, so the next call can
+			// be made with real information.
+			cost := ""
+			if herr == nil {
+				cost = fmt.Sprintf(" It costs %d points.", h.Cost)
+			}
+			return textResult(fmt.Sprintf(
+				"Not unlocked: confirm was not set.%s\n\n"+
+					"Unlocking permanently deducts the cost from your score. "+
+					"Ask the user whether to proceed, then call again with confirm=true.", cost,
+			)), out, nil
+		}
 	}
 
 	if _, err := s.deps.Client.UnlockHint(ctx, in.HintID); err != nil {
@@ -241,7 +259,11 @@ func (s *Server) unlockHint(ctx context.Context, _ *mcp.CallToolRequest, in Unlo
 	out.Content = h.Content
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Hint %d unlocked. %d points were deducted from your score.\n\n", h.ID, h.Cost)
+	if h.Cost > 0 {
+		fmt.Fprintf(&b, "Hint %d unlocked. %d points were deducted from your score.\n\n", h.ID, h.Cost)
+	} else {
+		fmt.Fprintf(&b, "Hint %d unlocked. It was free, so no points were spent.\n\n", h.ID)
+	}
 	b.WriteString(untrusted("Hint content", h.Content))
 	return textResult(b.String()), out, nil
 }
@@ -349,13 +371,28 @@ func (s *Server) downloadFiles(ctx context.Context, _ *mcp.CallToolRequest, in D
 	return textResult(b.String()), out, nil
 }
 
-// registerTools wires up every tool. Order determines the order clients see.
+// registerTools wires up the tools for the configured profile. Order
+// determines the order clients see.
+//
+// The lite profile registers only what is needed to actually play: identity,
+// challenges, flags, hints, attachments, the scoreboard, and your own history.
+// It leaves out the organizer-adjacent reads (other accounts' profiles and
+// solves, per-challenge solver lists, score timelines, announcements), the
+// CTFd 3.8 extras (official solutions, ratings), and everything that
+// administers the account itself (tokens, profile, team membership).
 func (s *Server) registerTools() {
+	// Present in both profiles.
 	s.registerAccountTools()
 	s.registerChallengeTools()
 	s.registerSubmitTools()
 	s.registerMiscTools()
 	s.registerScoreboardTools()
+	s.registerHistoryTools()
+
+	if s.deps.Lite {
+		return
+	}
 	s.registerManagementTools()
 	s.registerSolutionTools()
+	s.registerDiscoveryTools()
 }
