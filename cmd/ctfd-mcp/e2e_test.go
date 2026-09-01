@@ -136,7 +136,9 @@ func TestPasswordLoginAndSubmitOverStdio(t *testing.T) {
 		"CTFD_URL="+ctfd.URL,
 		"CTFD_USERNAME=player1",
 		"CTFD_PASSWORD=hunter2",
-		"CTFD_ALLOW_SUBMIT=true",
+		// Submission is enabled by default. Clear any developer override so this
+		// subprocess proves that behavior rather than inheriting it.
+		"CTFD_ALLOW_SUBMIT=",
 		"CTFD_LOG_LEVEL=error",
 		"CTFD_CACHE_TTL=0",
 		// Ensure no stray token in the developer's environment takes over.
@@ -187,6 +189,37 @@ func TestPasswordLoginAndSubmitOverStdio(t *testing.T) {
 		}
 		if got := ctfd.csrfRejected(); got != 0 {
 			t.Errorf("the submission was CSRF-rejected %d times", got)
+		}
+	})
+
+	t.Run("recovers an expired password session before reading", func(t *testing.T) {
+		ctfd.expire()
+		res, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "ctfd_whoami"})
+		if err != nil {
+			t.Fatalf("CallTool: %v", err)
+		}
+		if res.IsError || !strings.Contains(contentText(res), "player1") {
+			t.Fatalf("read should recover after session expiry: %s", contentText(res))
+		}
+	})
+
+	t.Run("recovers an expired password session before submitting", func(t *testing.T) {
+		ctfd.expire()
+		res, err := sess.CallTool(ctx, &mcp.CallToolParams{
+			Name: "ctfd_submit_flag",
+			// The preceding test solved challenge 1 in this process. Force keeps
+			// that session-level duplicate guard from masking the expired-session
+			// behavior this test is specifically exercising.
+			Arguments: map[string]any{"challenge_id": 1, "flag": "flag{after_expiry}", "force": true},
+		})
+		if err != nil {
+			t.Fatalf("CallTool: %v", err)
+		}
+		if res.IsError || !strings.Contains(contentText(res), "CORRECT") {
+			t.Fatalf("submission should recover after session expiry: %s", contentText(res))
+		}
+		if got := ctfd.accepted(); got != 2 {
+			t.Errorf("CTFd recorded %d successful submissions, want 2", got)
 		}
 	})
 
@@ -346,6 +379,15 @@ func (s *loginCTFd) accepted() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.submits
+}
+
+// expire invalidates the current cookie while leaving the login endpoint
+// available. It models a session expiring between otherwise-valid tool calls.
+func (s *loginCTFd) expire() {
+	s.mu.Lock()
+	s.session = "expired-session"
+	s.authed = false
+	s.mu.Unlock()
 }
 
 func (s *loginCTFd) csrfRejected() int {

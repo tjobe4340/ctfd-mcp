@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -143,8 +145,8 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL, destDir string, maxB
 		return nil, fmt.Errorf("ctfd: closing attachment: %w", err)
 	}
 
-	finalPath := uniquePath(destPath)
-	if err := os.Rename(tmpName, finalPath); err != nil {
+	finalPath, err := publishWithoutOverwrite(tmpName, destPath)
+	if err != nil {
 		return nil, fmt.Errorf("ctfd: saving attachment: %w", err)
 	}
 
@@ -203,7 +205,7 @@ func safeFilename(urlPath string) (string, error) {
 		decoded = urlPath
 	}
 	name := path.Base(strings.ReplaceAll(decoded, "\\", "/"))
-	name = strings.TrimSpace(name)
+	name = strings.TrimRight(strings.TrimSpace(name), ". ")
 
 	if name == "" || name == "." || name == ".." || name == "/" {
 		return "", fmt.Errorf("ctfd: attachment URL has no usable filename: %q", urlPath)
@@ -238,6 +240,13 @@ func safeFilename(urlPath string) (string, error) {
 		}
 		name = name[:200-len(ext)] + ext
 	}
+	// Truncation can itself expose a trailing space or period that was not at
+	// the end of the original name. Windows rejects those names, so normalize
+	// once more after applying the length cap.
+	name = strings.TrimRight(name, ". ")
+	if name == "" {
+		return "", fmt.Errorf("ctfd: attachment filename became empty after truncation")
+	}
 	return name, nil
 }
 
@@ -266,19 +275,86 @@ func isWithin(dir, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// uniquePath appends a counter when the destination already exists, so a
-// second download never silently overwrites the first.
-func uniquePath(p string) string {
-	if _, err := os.Stat(p); os.IsNotExist(err) {
-		return p
-	}
-	ext := filepath.Ext(p)
-	stem := strings.TrimSuffix(p, ext)
-	for i := 1; i < 1000; i++ {
-		candidate := fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
+// publishWithoutOverwrite exposes a completed temporary download at a unique
+// filename without ever replacing an existing attachment.
+//
+// A Stat-then-Rename sequence looks safe but is not: two concurrent downloads
+// can both observe the name as free, and Unix Rename overwrites the winner's
+// file. Linking the completed temporary file creates the final name atomically
+// with no-overwrite semantics. Some filesystems do not support hard links, so
+// the fallback reserves a new file with O_EXCL and copies into that reservation.
+func publishWithoutOverwrite(tmpPath, desiredPath string) (string, error) {
+	ext := filepath.Ext(desiredPath)
+	stem := strings.TrimSuffix(desiredPath, ext)
+
+	for i := 0; i < 10_000; i++ {
+		candidate := desiredPath
+		if i > 0 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
 		}
+
+		if err := os.Link(tmpPath, candidate); err == nil {
+			if err := os.Remove(tmpPath); err != nil {
+				_ = os.Remove(candidate)
+				return "", fmt.Errorf("removing temporary attachment after publishing: %w", err)
+			}
+			return candidate, nil
+		} else if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+
+		// Hard links are unavailable on some removable and network filesystems.
+		// Reserve the target exclusively before copying so that fallback never
+		// reintroduces the overwrite race the hard-link path avoids.
+		copied, err := copyIntoNewFile(tmpPath, candidate)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if !copied {
+			return "", fmt.Errorf("could not publish attachment")
+		}
+		if err := os.Remove(tmpPath); err != nil {
+			_ = os.Remove(candidate)
+			return "", fmt.Errorf("removing temporary attachment after publishing: %w", err)
+		}
+		return candidate, nil
 	}
-	return p
+	return "", fmt.Errorf("could not find a free filename after 10,000 attempts for %q", filepath.Base(desiredPath))
+}
+
+// copyIntoNewFile copies src into dst only when dst did not previously exist.
+// It returns false with fs.ErrExist when another download reserved the name.
+func copyIntoNewFile(srcPath, dstPath string) (bool, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return false, fmt.Errorf("opening temporary attachment: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = dst.Close()
+	}()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(dstPath)
+		return false, fmt.Errorf("copying attachment into reserved destination: %w", err)
+	}
+	if err := dst.Sync(); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(dstPath)
+		return false, fmt.Errorf("flushing reserved attachment: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(dstPath)
+		return false, fmt.Errorf("closing reserved attachment: %w", err)
+	}
+	return true, nil
 }

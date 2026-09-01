@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # A short weekly fuzz run catches unexpected parsing edge cases without
+    # consuming private-repository minutes on every pull request.
+    - cron: "37 4 * * 1"
 
 # Least privilege: nothing here needs write access to the repository.
 permissions:
@@ -120,6 +124,87 @@ jobs:
         # deprecation warning into every run. One fewer third-party action in
         # the supply chain, and the version is pinned here where it is visible.
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+
+  security:
+    name: Reachable dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        # Report only vulnerabilities reachable from this program, rather than
+        # every advisory affecting any transitive module in the graph.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+  ctfd-compat:
+    name: Live CTFd compatibility (${{ matrix.ctfd }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test the oldest supported version plus the latest patch release from
+        # each later 3.x line. Pinning avoids a passing build silently changing
+        # its coverage when CTFd releases a new image.
+        ctfd: ["3.6.1", "3.7.7", "3.8.6"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start CTFd
+        run: >-
+          docker run --detach --name ctfd --publish 8000:8000
+          --env SECRET_KEY=ctfd-mcp-ci-secret-not-for-production
+          ctfd/ctfd:${{ matrix.ctfd }}
+
+      - name: Create a player and a test challenge
+        id: bootstrap
+        env:
+          CTFD_SMOKE_URL: http://127.0.0.1:8000
+          CTFD_SMOKE_USERNAME: ctfd-mcp-player
+          CTFD_SMOKE_PASSWORD: ctfd-mcp-password
+        run: python3 scripts/ci/bootstrap_ctfd.py
+
+      - name: Exercise the real server over MCP stdio
+        env:
+          CTFD_INTEGRATION_URL: http://127.0.0.1:8000
+          CTFD_INTEGRATION_USERNAME: ctfd-mcp-player
+          CTFD_INTEGRATION_PASSWORD: ctfd-mcp-password
+          CTFD_INTEGRATION_CHALLENGE_ID: ${{ steps.bootstrap.outputs.challenge_id }}
+          CTFD_INTEGRATION_FLAG: flag{ctfd_mcp_live_smoke}
+        run: >-
+          go test -count=1 -tags=ctfdintegration ./cmd/ctfd-mcp
+          -run '^TestRealCTFdPasswordLoginSmoke$'
+
+      - name: Show CTFd logs after a failure
+        if: failure()
+        run: docker logs ctfd
+
+  fuzz:
+    name: Scheduled fuzzing
+    # Fuzzing has diminishing returns for every push, but is useful as a
+    # periodic guardrail for the hostile filename parsing used by downloads.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fuzz download filename handling
+        run: go test ./internal/ctfd -run '^$' -fuzz '^FuzzSafeFilename$' -fuzztime=1m
 
   cross:
     name: Cross-compile

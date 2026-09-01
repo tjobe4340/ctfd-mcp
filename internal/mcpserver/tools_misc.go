@@ -28,9 +28,6 @@ type GetHintOut struct {
 // UnlockHintIn identifies a hint to purchase.
 type UnlockHintIn struct {
 	HintID int `json:"hint_id" jsonschema:"The numeric hint ID to unlock."`
-	// Confirm is required rather than optional: unlocking permanently spends
-	// points, and the model should not be able to do it by reflex.
-	Confirm bool `json:"confirm,omitempty" jsonschema:"Must be set to true to proceed. Unlocking permanently deducts the hint's cost from your score. Ask the user before setting this."`
 }
 
 // UnlockHintOut reports the outcome of an unlock.
@@ -94,8 +91,8 @@ func (s *Server) registerMiscTools() {
 
 	unlockDesc := "Spend points to unlock a paid hint. "
 	if s.deps.AllowUnlock {
-		unlockDesc += "UNLOCKING IS ENABLED AND IRREVERSIBLE: the cost is deducted from your score permanently and cannot be refunded. " +
-			"Always confirm with the user before calling this, and check ctfd_get_challenge for the cost first."
+		unlockDesc += "UNLOCKING IS ENABLED: calling this tool immediately deducts the hint's cost from your score. " +
+			"Check ctfd_get_challenge first if you need to know the cost."
 	} else {
 		unlockDesc += "UNLOCKING IS CURRENTLY DISABLED by server configuration, so this tool will not contact CTFd."
 	}
@@ -181,14 +178,9 @@ func (s *Server) unlockHint(ctx context.Context, _ *mcp.CallToolRequest, in Unlo
 		return nil, out, fmt.Errorf("hint_id must be a positive integer, got %d", in.HintID)
 	}
 
-	// Read the hint first so the gating below is driven by what it actually
-	// costs rather than by a blanket assumption. Events differ: where hints
-	// are free there is nothing to protect the user from, and demanding a
-	// confirmation for a zero-point purchase is pure friction.
-	//
-	// If the hint cannot be read at all, assume it is paid. That is the safe
-	// direction: the worst case is an extra confirmation, not silently spent
-	// points.
+	// Read the hint first so the gate is driven by what it actually costs.
+	// CTFd returns zero-cost hints directly, so there is no unlock record to
+	// create for an already available free hint.
 	h, herr := s.deps.Client.Hint(ctx, in.HintID)
 	free := herr == nil && h.Cost == 0
 	if herr == nil {
@@ -209,22 +201,8 @@ func (s *Server) unlockHint(ctx context.Context, _ *mcp.CallToolRequest, in Unlo
 		if !s.deps.AllowUnlock {
 			return textResult(
 				"Hint unlocking is disabled on this server, so no points were spent and nothing was sent to CTFd.\n\n" +
-					"To enable it, restart ctfd-mcp with CTFD_ALLOW_UNLOCK=true (or the -allow-unlock flag). " +
-					"It is off by default because unlocking permanently deducts points.",
+					"To re-enable it, restart ctfd-mcp without CTFD_ALLOW_UNLOCK=false (or pass -allow-unlock=true).",
 			), out, nil
-		}
-		if !in.Confirm {
-			// Report the price rather than just refusing, so the next call can
-			// be made with real information.
-			cost := ""
-			if herr == nil {
-				cost = fmt.Sprintf(" It costs %d points.", h.Cost)
-			}
-			return textResult(fmt.Sprintf(
-				"Not unlocked: confirm was not set.%s\n\n"+
-					"Unlocking permanently deducts the cost from your score. "+
-					"Ask the user whether to proceed, then call again with confirm=true.", cost,
-			)), out, nil
 		}
 	}
 
@@ -314,7 +292,7 @@ func (s *Server) downloadFiles(ctx context.Context, _ *mcp.CallToolRequest, in D
 		return textResult(
 			"Attachment download is disabled on this server, so nothing was written to disk.\n\n" +
 				"Call ctfd_get_challenge to see the attachment URLs; they carry a signed token and can be fetched manually.\n\n" +
-				"To enable downloads, restart ctfd-mcp with CTFD_ALLOW_DOWNLOAD=true and CTFD_DOWNLOAD_DIR set to a sandbox directory.",
+				"To re-enable downloads, restart ctfd-mcp without CTFD_ALLOW_DOWNLOAD=false (or pass -allow-download=true).",
 		), out, nil
 	}
 

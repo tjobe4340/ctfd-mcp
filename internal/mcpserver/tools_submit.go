@@ -68,8 +68,11 @@ func (s *Server) submitFlag(ctx context.Context, _ *mcp.CallToolRequest, in Subm
 	if in.ChallengeID <= 0 {
 		return nil, out, fmt.Errorf("challenge_id must be a positive integer, got %d", in.ChallengeID)
 	}
-	flag := strings.TrimSpace(in.Flag)
-	if flag == "" {
+	// Preserve the exact candidate the user supplied. Trimming a flag would
+	// turn a valid (if unusual) leading or trailing space into a different
+	// submission. Only use a trimmed copy to reject an all-whitespace value.
+	flag := in.Flag
+	if strings.TrimSpace(flag) == "" {
 		return nil, out, fmt.Errorf("flag is empty; there is nothing to submit")
 	}
 
@@ -78,8 +81,8 @@ func (s *Server) submitFlag(ctx context.Context, _ *mcp.CallToolRequest, in Subm
 		return textResult(
 			"Flag submission is disabled on this server, so nothing was submitted.\n\n" +
 				"The candidate flag was not sent to CTFd. Report it to the user instead.\n\n" +
-				"To enable submission, restart ctfd-mcp with CTFD_ALLOW_SUBMIT=true (or the -allow-submit flag). " +
-				"This is deliberately off by default because submissions are irreversible and consume limited attempts.",
+				"Restart without CTFD_ALLOW_SUBMIT=false (or -allow-submit=false) to re-enable it. " +
+				"Submissions are enabled by default, but this deployment was deliberately configured read-only.",
 		), out, nil
 	}
 
@@ -150,7 +153,11 @@ func (s *Server) submitFlag(ctx context.Context, _ *mcp.CallToolRequest, in Subm
 		}
 		b.WriteString(".\n")
 		if remaining != nil {
-			fmt.Fprintf(&b, "Attempts remaining: %d. A real submission would leave %d.\n", *remaining, *remaining-1)
+			wouldRemain := *remaining - 1
+			if wouldRemain < 0 {
+				wouldRemain = 0
+			}
+			fmt.Fprintf(&b, "Attempts remaining: %d. A real submission would leave %d.\n", *remaining, wouldRemain)
 		} else {
 			b.WriteString("This challenge has no attempt limit.\n")
 		}
@@ -159,6 +166,24 @@ func (s *Server) submitFlag(ctx context.Context, _ *mcp.CallToolRequest, in Subm
 	}
 
 	res, err := s.deps.Client.Attempt(ctx, in.ChallengeID, flag)
+	// CTFd reports an expired cookie as an authentication_required *attempt
+	// result*, rather than an HTTP client error. That reply explicitly means
+	// the candidate was not evaluated, so a single password re-login and retry
+	// is safe. Some proxies instead turn that same rejection into a 403 error;
+	// this branch handles both forms before recording an uncertain submission.
+	// Token and supplied-cookie auth cannot be refreshed here.
+	expiredLogin := err != nil && (ctfd.IsAuth(err) || ctfd.IsForbidden(err))
+	if err == nil && res != nil && res.Status == ctfd.AttemptAuthRequired {
+		expiredLogin = true
+	}
+	if expiredLogin && s.deps.Client.NeedsLogin() {
+		s.log.Info("password session expired during flag submission; logging in again and retrying once", "challenge_id", in.ChallengeID)
+		s.deps.Client.InvalidateLogin()
+		if loginErr := s.deps.Client.EnsureLogin(ctx); loginErr != nil {
+			return nil, out, loginErr
+		}
+		res, err = s.deps.Client.Attempt(ctx, in.ChallengeID, flag)
+	}
 	if err != nil {
 		// The submission may or may not have been recorded, so log the attempt
 		// either way rather than risking a duplicate on the next call.
@@ -166,8 +191,10 @@ func (s *Server) submitFlag(ctx context.Context, _ *mcp.CallToolRequest, in Subm
 		return nil, out, err
 	}
 
-	s.attempts.Record(in.ChallengeID, flag, string(res.Status))
-	out.Submitted = true
+	if attemptReachedCTFd(res.Status) {
+		s.attempts.Record(in.ChallengeID, flag, string(res.Status))
+	}
+	out.Submitted = attemptReachedCTFd(res.Status)
 	out.Status = string(res.Status)
 	out.Message = res.Message
 	out.Correct = res.Status == ctfd.AttemptCorrect
@@ -188,6 +215,20 @@ func (s *Server) submitFlag(ctx context.Context, _ *mcp.CallToolRequest, in Subm
 	)
 
 	return textResult(renderSubmission(in.ChallengeID, detail, res, out)), out, nil
+}
+
+// attemptReachedCTFd reports whether CTFd accepted the request far enough to
+// make remembering the exact candidate useful. A paused event and an
+// authentication-required reply explicitly say the flag was not evaluated;
+// caching either would wrongly block the player from submitting it later.
+// CTFd records a rate-limited attempt as a failure, so that status is retained.
+func attemptReachedCTFd(status ctfd.AttemptStatus) bool {
+	switch status {
+	case ctfd.AttemptPaused, ctfd.AttemptAuthRequired:
+		return false
+	default:
+		return true
+	}
 }
 
 func renderSubmission(id int, detail *ctfd.ChallengeDetail, res *ctfd.AttemptResult, out SubmitOut) string {
