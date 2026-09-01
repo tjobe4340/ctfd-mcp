@@ -92,6 +92,13 @@ func newFakeCTFd361(t *testing.T) *fakeCTFd361 {
 	mux.HandleFunc("/api/v1/users/me/awards", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"success":true,"data":[]}`)
 	})
+	// The missing 3.8-only endpoint falls through to Flask's HTML 404 page,
+	// rather than returning CTFd's usual JSON envelope.
+	mux.HandleFunc("/api/v1/users/me/submissions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><title>Not Found</title></html>"))
+	})
 	mux.HandleFunc("/api/v1/notifications", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, `{"success":true,"data":[{"id":1,"title":"Welcome","content":"Good luck","date":"2026-08-01T08:00:00"}]}`)
 	})

@@ -638,7 +638,10 @@ func (c *Client) classify(req request, resp *http.Response, raw []byte) (apiResu
 			}
 		}
 	} else if looksLikeHTML(raw) {
-		e.Kind = KindDecode
+		// CTFd's older routes sometimes return Flask's HTML 404 page instead
+		// of an API envelope. Preserve the HTTP-derived kind so callers can
+		// still handle an absent optional endpoint (for example, by falling
+		// back from users/me/submissions to solves and fails).
 		e.Message = describeNonJSON(resp, raw)
 	}
 	// A redirect to the login page is an authentication problem, whatever

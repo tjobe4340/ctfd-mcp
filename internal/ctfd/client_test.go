@@ -235,6 +235,27 @@ func TestNonJSONResponseIsActionable(t *testing.T) {
 	}
 }
 
+func TestHTMLNotFoundPreservesNotFoundKind(t *testing.T) {
+	// Older CTFd versions use Flask's default HTML 404 for API routes that did
+	// not exist yet. Optional-feature callers need the semantic 404 to select a
+	// fallback, while the message should still explain the unexpected HTML.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><title>Not Found</title></html>"))
+	}))
+	defer ts.Close()
+
+	c := newTestClient(t, ts, nil)
+	_, err := c.MySubmissions(context.Background(), 0)
+	if !IsNotFound(err) {
+		t.Fatalf("HTML 404 should remain not-found, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "HTML") {
+		t.Errorf("error should still diagnose the HTML response: %v", err)
+	}
+}
+
 func TestRetriesTransientFailuresThenSucceeds(t *testing.T) {
 	var calls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
