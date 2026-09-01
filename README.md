@@ -55,8 +55,46 @@ What it does **not** do:
 
 ---
 
+## Quick start
+
+You need a CTFd URL, an API token from that CTFd instance, and Go 1.25 or newer to
+build the binary. Create the token in CTFd at **Settings → Access Tokens → Generate**.
+API-token authentication is the recommended path: it avoids browser session expiry and
+CSRF handling.
+
+1. Build the server from this repository:
+
+   ```bash
+   go build -trimpath -ldflags "-s -w" -o ctfd-mcp ./cmd/ctfd-mcp
+   ```
+
+   On Windows, use `-o ctfd-mcp.exe`.
+
+2. Add it to Claude Code, replacing the URL, token, and binary path:
+
+   ```bash
+   claude mcp add ctfd --env CTFD_URL=https://ctf.example.com --env CTFD_TOKEN=ctfd_your_token_here -- /absolute/path/to/ctfd-mcp
+   ```
+
+3. Restart or reconnect your MCP client, then start with `ctfd_whoami` to confirm
+   the account, score, and event mode.
+
+From there, a typical play flow is `ctfd_list_challenges` → `ctfd_get_challenge` →
+`ctfd_get_hint` or `ctfd_download_files` → `ctfd_submit_flag`. Use
+`ctfd_my_submissions` before a retry to see what CTFd already recorded.
+
+Flag submissions, paid hint unlocks, and attachment downloads are already enabled.
+Attachments save to `ctfd-downloads` unless `CTFD_DOWNLOAD_DIR` is set. If you want a
+restricted deployment, set the appropriate `CTFD_ALLOW_*` value to `false`.
+
+For Claude Desktop, password login, session-cookie login, or a custom download
+directory, continue with [Configure your MCP client](#configure-your-mcp-client).
+
+---
+
 ## Contents
 
+- [Quick start](#quick-start)
 - [Install](#install)
 - [Authenticate](#authenticate)
 - [Configure your MCP client](#configure-your-mcp-client)
