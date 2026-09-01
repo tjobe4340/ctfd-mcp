@@ -240,6 +240,13 @@ func safeFilename(urlPath string) (string, error) {
 		}
 		name = name[:200-len(ext)] + ext
 	}
+	// Truncation can itself expose a trailing space or period that was not at
+	// the end of the original name. Windows rejects those names, so normalize
+	// once more after applying the length cap.
+	name = strings.TrimRight(name, ". ")
+	if name == "" {
+		return "", fmt.Errorf("ctfd: attachment filename became empty after truncation")
+	}
 	return name, nil
 }
 

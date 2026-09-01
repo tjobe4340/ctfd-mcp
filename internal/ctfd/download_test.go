@@ -55,6 +55,46 @@ func TestSafeFilenameNormalizesHostileNames(t *testing.T) {
 	}
 }
 
+// FuzzSafeFilename checks the invariants that keep attachment names inside the
+// configured download directory. The scheduled CI run fuzzes this for a minute;
+// ordinary `go test` still executes these seed cases once.
+func FuzzSafeFilename(f *testing.F) {
+	for _, seed := range []string{
+		"/files/challenge.zip",
+		"/files/..%2f..%2fetc%2fpasswd",
+		"/files/CON",
+		"/files/--flag",
+		"/files/a:b*c?.txt",
+		"/files/",
+		"%",
+		strings.Repeat("a", 300),
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, urlPath string) {
+		name, err := safeFilename(urlPath)
+		if err != nil {
+			return
+		}
+		if name == "" || name == "." || name == ".." {
+			t.Fatalf("safeFilename(%q) returned unsafe empty or dot name %q", urlPath, name)
+		}
+		if strings.ContainsAny(name, `/\\`) {
+			t.Fatalf("safeFilename(%q) retained a path separator in %q", urlPath, name)
+		}
+		if filepath.IsAbs(name) || filepath.Base(name) != name {
+			t.Fatalf("safeFilename(%q) returned non-basename %q", urlPath, name)
+		}
+		if strings.TrimRight(name, ". ") != name {
+			t.Fatalf("safeFilename(%q) retained a Windows-trailing suffix in %q", urlPath, name)
+		}
+		if len(name) > 200 {
+			t.Fatalf("safeFilename(%q) returned %d-byte name, want at most 200", urlPath, len(name))
+		}
+	})
+}
+
 func TestIsWithin(t *testing.T) {
 	dir := filepath.Clean("/sandbox")
 	if !isWithin(dir, filepath.Join(dir, "file.txt")) {
