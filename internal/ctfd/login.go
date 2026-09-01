@@ -37,6 +37,20 @@ func (c *Client) LoggedIn() bool {
 	return c.loggedIn
 }
 
+// InvalidateLogin marks a password-authenticated session as expired. The next
+// EnsureLogin call will establish a fresh session. It is intentionally a no-op
+// for API-token and explicitly supplied-cookie authentication: those modes
+// cannot be refreshed with the username and password held by this client.
+func (c *Client) InvalidateLogin() {
+	if !c.NeedsLogin() {
+		return
+	}
+	c.loginMu.Lock()
+	c.loggedIn = false
+	c.loginMu.Unlock()
+	c.ResetCSRF()
+}
+
 // Login authenticates with a username (or email) and password, establishing a
 // session cookie for subsequent requests.
 //

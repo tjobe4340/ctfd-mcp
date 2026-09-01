@@ -560,7 +560,7 @@ func TestGetChallengeFencesUntrustedDescription(t *testing.T) {
 
 func TestSubmitDisabledMakesNoRequest(t *testing.T) {
 	f := newFakeCTFd(t)
-	s := testDeps(t, f, nil) // AllowSubmit defaults to false
+	s := testDeps(t, f, func(d *Deps) { d.AllowSubmit = false })
 	sess := connect(t, s)
 
 	text, res := callText(t, sess, "ctfd_submit_flag", map[string]any{"challenge_id": 1, "flag": "flag{x}"})
@@ -685,27 +685,24 @@ func TestSubmitRateLimitedWarnsAttemptWasConsumed(t *testing.T) {
 	}
 }
 
-func TestUnlockHintRequiresConfirmationAndGate(t *testing.T) {
+func TestPaidHintUnlockRespectsOnlyTheOptOutGate(t *testing.T) {
 	f := newFakeCTFd(t)
 
 	t.Run("disabled", func(t *testing.T) {
-		s := testDeps(t, f, nil)
+		s := testDeps(t, f, func(d *Deps) { d.AllowUnlock = false })
 		sess := connect(t, s)
-		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5, "confirm": true})
+		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5})
 		if !strings.Contains(text, "disabled") {
 			t.Errorf("expected a disabled notice:\n%s", text)
 		}
 	})
 
-	t.Run("requires confirm", func(t *testing.T) {
+	t.Run("unlocks without confirm", func(t *testing.T) {
 		s := testDeps(t, f, func(d *Deps) { d.AllowUnlock = true })
 		sess := connect(t, s)
-		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5, "confirm": false})
-		if !strings.Contains(text, "confirm was not set") {
-			t.Errorf("expected a confirmation prompt:\n%s", text)
-		}
-		if !strings.Contains(text, "10 points") {
-			t.Errorf("the prompt should state the cost:\n%s", text)
+		text, res := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5})
+		if res.IsError || !strings.Contains(text, "10 points were deducted") {
+			t.Errorf("a paid hint should unlock without confirmation:\n%s", text)
 		}
 	})
 }
@@ -1108,10 +1105,9 @@ func TestMySubmissionsFallbackFiltersByChallenge(t *testing.T) {
 	}
 }
 
-// TestFreeHintNeedsNoGateOrConfirmation covers the case where an event charges
-// nothing for hints. There is no score to protect, so neither the
-// CTFD_ALLOW_UNLOCK gate nor an explicit confirmation should stand in the way.
-func TestFreeHintNeedsNoGateOrConfirmation(t *testing.T) {
+// TestFreeHintNeedsNoGate covers the case where an event charges nothing for
+// hints. There is no score to protect, so the paid-hint opt-out does not apply.
+func TestFreeHintNeedsNoGate(t *testing.T) {
 	f := newFakeCTFd(t)
 	// Hint 6 costs 0 and the fake returns its content directly, exactly as
 	// CTFd does: the locked view only applies when hint.cost is non-zero.
@@ -1125,44 +1121,12 @@ func TestFreeHintNeedsNoGateOrConfirmation(t *testing.T) {
 	if strings.Contains(text, "disabled") {
 		t.Errorf("the unlock gate should not apply to a free hint:\n%s", text)
 	}
-	if strings.Contains(text, "confirm was not set") {
-		t.Errorf("a free hint should not require confirmation:\n%s", text)
-	}
 	if !strings.Contains(text, "e is tiny") {
 		t.Errorf("the hint content should be returned:\n%s", text)
 	}
 	if !strings.Contains(text, "no points were spent") {
 		t.Errorf("should state that nothing was spent:\n%s", text)
 	}
-}
-
-// TestPaidHintStillRequiresGateAndConfirmation is the other half: gating is
-// driven by the cost CTFd reports, so a hint that does cost points keeps every
-// safeguard even though free ones bypass them.
-func TestPaidHintStillRequiresGateAndConfirmation(t *testing.T) {
-	f := newFakeCTFd(t)
-
-	t.Run("gate still applies", func(t *testing.T) {
-		s := testDeps(t, f, nil) // AllowUnlock false
-		sess := connect(t, s)
-		// Hint 5 costs 10 points.
-		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5})
-		if !strings.Contains(text, "disabled") {
-			t.Errorf("a paid hint must still respect the gate:\n%s", text)
-		}
-	})
-
-	t.Run("confirmation still required", func(t *testing.T) {
-		s := testDeps(t, f, func(d *Deps) { d.AllowUnlock = true })
-		sess := connect(t, s)
-		text, _ := callText(t, sess, "ctfd_unlock_hint", map[string]any{"hint_id": 5})
-		if !strings.Contains(text, "confirm was not set") {
-			t.Errorf("a paid hint must still require confirmation:\n%s", text)
-		}
-		if !strings.Contains(text, "10 points") {
-			t.Errorf("the prompt should state the cost:\n%s", text)
-		}
-	})
 }
 
 func TestMySubmissionsShowsWhatWasTyped(t *testing.T) {

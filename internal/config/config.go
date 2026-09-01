@@ -17,9 +17,10 @@ import (
 	"time"
 )
 
-// Defaults for every tunable. Chosen to be safe against a live scoreboard:
-// conservative rates, bounded pagination, and every point-spending or
-// attempt-consuming operation disabled until explicitly enabled.
+// Defaults for every tunable. Chosen to work immediately against a live
+// scoreboard: conservative rates, bounded pagination, and flag submission
+// enabled for an intentionally installed competitor tool. Every core play
+// capability is on by default, with explicit opt-outs for stricter setups.
 const (
 	DefaultTimeout          = 30 * time.Second
 	DefaultMaxRetries       = 3
@@ -32,11 +33,14 @@ const (
 	DefaultCacheTTL         = 15 * time.Second
 	DefaultMaxDownloadBytes = 64 << 20 // 64 MiB
 	DefaultMaxResponseBytes = 32 << 20 // 32 MiB
+	// DefaultDownloadDir is resolved relative to the server process's working
+	// directory, then made absolute during validation.
+	DefaultDownloadDir = "ctfd-downloads"
 )
 
 // Version is the server version, overridable at link time with
 // -ldflags "-X github.com/tjobe4340/ctfd-mcp/internal/config.Version=x.y.z".
-var Version = "1.0.0"
+var Version = "1.4.0"
 
 // DefaultUserAgent identifies this client to CTFd. Event organizers watch
 // request logs, and an honest User-Agent distinguishes an assisted competitor
@@ -73,12 +77,15 @@ type Config struct {
 	// sharper set measurably improves tool selection.
 	Lite bool
 
-	// AllowSubmit gates flag submission. Submissions are irreversible, count
-	// against per-challenge attempt limits, and are visible to organizers.
+	// AllowSubmit lets an operator deliberately disable flag submission.
+	// Submission is enabled by default: installing a competitor tool is an
+	// affirmative choice to use its core playing capability.
 	AllowSubmit bool
-	// AllowUnlock gates hint unlocking, which permanently spends points.
+	// AllowUnlock lets an operator deliberately disable hint unlocking. It is
+	// enabled by default, and paid hints unlock as soon as the tool is called.
 	AllowUnlock bool
-	// AllowDownload gates writing challenge attachments to disk.
+	// AllowDownload lets an operator deliberately disable writing challenge
+	// attachments to disk. It is enabled by default.
 	AllowDownload bool
 
 	// DownloadDir is the sandbox root for attachment downloads. Every write
@@ -156,11 +163,11 @@ func Load(args []string, stderr io.Writer) (*Config, error) {
 		password = fs.String("password", "", "CTFd password (env CTFD_PASSWORD)")
 
 		lite          = fs.Bool("lite", false, "register only the core play tools (env CTFD_LITE)")
-		allowSubmit   = fs.Bool("allow-submit", false, "permit flag submission (env CTFD_ALLOW_SUBMIT)")
-		allowUnlock   = fs.Bool("allow-unlock", false, "permit spending points to unlock hints (env CTFD_ALLOW_UNLOCK)")
-		allowDownload = fs.Bool("allow-download", false, "permit writing attachments to disk (env CTFD_ALLOW_DOWNLOAD)")
+		allowSubmit   = fs.Bool("allow-submit", true, "permit flag submission; false disables it (env CTFD_ALLOW_SUBMIT)")
+		allowUnlock   = fs.Bool("allow-unlock", true, "permit spending points to unlock hints; false disables it (env CTFD_ALLOW_UNLOCK)")
+		allowDownload = fs.Bool("allow-download", true, "permit writing attachments to disk; false disables it (env CTFD_ALLOW_DOWNLOAD)")
 
-		downloadDir = fs.String("download-dir", "", "sandbox directory for attachments (env CTFD_DOWNLOAD_DIR)")
+		downloadDir = fs.String("download-dir", DefaultDownloadDir, "sandbox directory for attachments (env CTFD_DOWNLOAD_DIR)")
 		maxDownload = fs.Int64("max-download-bytes", 0, "max bytes per attachment (env CTFD_MAX_DOWNLOAD_BYTES)")
 		maxResponse = fs.Int64("max-response-bytes", 0, "max bytes per API response (env CTFD_MAX_RESPONSE_BYTES)")
 
@@ -198,7 +205,7 @@ func Load(args []string, stderr io.Writer) (*Config, error) {
 		Session:          pickString(set, "session", *session, "CTFD_SESSION", ""),
 		Username:         pickString(set, "username", *username, "CTFD_USERNAME", ""),
 		Password:         pickString(set, "password", *password, "CTFD_PASSWORD", ""),
-		DownloadDir:      pickString(set, "download-dir", *downloadDir, "CTFD_DOWNLOAD_DIR", ""),
+		DownloadDir:      pickString(set, "download-dir", *downloadDir, "CTFD_DOWNLOAD_DIR", DefaultDownloadDir),
 		UserAgent:        pickString(set, "user-agent", *userAgent, "CTFD_USER_AGENT", DefaultUserAgent),
 		LogLevel:         strings.ToLower(pickString(set, "log-level", *logLevel, "CTFD_LOG_LEVEL", "info")),
 		MaxDownloadBytes: pickInt64(set, "max-download-bytes", *maxDownload, "CTFD_MAX_DOWNLOAD_BYTES", DefaultMaxDownloadBytes),
@@ -213,9 +220,9 @@ func Load(args []string, stderr io.Writer) (*Config, error) {
 		Timeout:          pickDuration(set, "timeout", *timeout, "CTFD_TIMEOUT", DefaultTimeout),
 		CacheTTL:         pickDuration(set, "cache-ttl", *cacheTTL, "CTFD_CACHE_TTL", DefaultCacheTTL),
 		Lite:             pickBool(set, "lite", *lite, "CTFD_LITE", false),
-		AllowSubmit:      pickBool(set, "allow-submit", *allowSubmit, "CTFD_ALLOW_SUBMIT", false),
-		AllowUnlock:      pickBool(set, "allow-unlock", *allowUnlock, "CTFD_ALLOW_UNLOCK", false),
-		AllowDownload:    pickBool(set, "allow-download", *allowDownload, "CTFD_ALLOW_DOWNLOAD", false),
+		AllowSubmit:      pickBool(set, "allow-submit", *allowSubmit, "CTFD_ALLOW_SUBMIT", true),
+		AllowUnlock:      pickBool(set, "allow-unlock", *allowUnlock, "CTFD_ALLOW_UNLOCK", true),
+		AllowDownload:    pickBool(set, "allow-download", *allowDownload, "CTFD_ALLOW_DOWNLOAD", true),
 		InsecureTLS:      pickBool(set, "insecure", *insecure, "CTFD_INSECURE_TLS", false),
 	}
 
@@ -409,10 +416,10 @@ const envHelp = `  CTFD_URL                 CTFd base URL (required)
   CTFD_SESSION             session cookie value
                            (set exactly one of: username+password, token, session)
   CTFD_LITE                "true" for the reduced core-play tool set
-  CTFD_ALLOW_SUBMIT        "true" to permit flag submission
-  CTFD_ALLOW_UNLOCK        "true" to permit spending points on hints
-  CTFD_ALLOW_DOWNLOAD      "true" to permit writing attachments to disk
-  CTFD_DOWNLOAD_DIR        sandbox directory for attachments
+  CTFD_ALLOW_SUBMIT        "false" to disable flag submission (enabled by default)
+  CTFD_ALLOW_UNLOCK        "false" to disable spending points on hints
+  CTFD_ALLOW_DOWNLOAD      "false" to disable writing attachments to disk
+  CTFD_DOWNLOAD_DIR        sandbox directory for attachments (default: ctfd-downloads)
   CTFD_MAX_DOWNLOAD_BYTES  max bytes per attachment
   CTFD_MAX_RESPONSE_BYTES  max bytes per API response
   CTFD_TIMEOUT             per-request timeout, e.g. 30s

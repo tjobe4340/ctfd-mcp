@@ -2,8 +2,8 @@
 // instance to an MCP client over stdio.
 //
 // It is scoped to what a competitor can do: reading challenges, hints,
-// scoreboards, and solve history, and — only when explicitly enabled —
-// submitting flags, unlocking hints, and downloading attachments.
+// scoreboards, and solve history; submitting flags; unlocking hints; and
+// downloading attachments.
 //
 // Configuration comes from environment variables and flags; see -help.
 package main
@@ -47,7 +47,7 @@ func run(args []string) error {
 	logger := newLogger(cfg, red)
 
 	logger.Info("starting", "version", config.Version, "config", slog.Any("values", cfg.Redacted()))
-	warnOnRiskyConfig(cfg, logger)
+	logConfigNotices(cfg, logger)
 
 	client, err := ctfd.NewClient(ctfd.Options{
 		BaseURL:          cfg.BaseURL,
@@ -172,20 +172,21 @@ func (h *redactingHandler) WithGroup(name string) slog.Handler {
 	return &redactingHandler{Handler: h.Handler.WithGroup(name), red: h.red}
 }
 
-// warnOnRiskyConfig surfaces settings that weaken safety, so they appear in
-// the client's log rather than being discovered after a mistake.
-func warnOnRiskyConfig(cfg *config.Config, logger *slog.Logger) {
+// logConfigNotices makes the active capabilities visible at startup. The core
+// player capabilities are defaults, so they are informational; settings that
+// weaken transport security remain warnings.
+func logConfigNotices(cfg *config.Config, logger *slog.Logger) {
 	if cfg.InsecureTLS {
 		logger.Warn("TLS certificate verification is disabled; traffic to CTFd can be intercepted")
 	}
 	if cfg.AllowSubmit {
-		logger.Warn("flag submission is enabled; submissions are irreversible, consume per-challenge attempts, and are visible to organizers")
+		logger.Info("flag submission is enabled; submissions are irreversible, consume per-challenge attempts, and are visible to organizers")
 	}
 	if cfg.AllowUnlock {
-		logger.Warn("hint unlocking is enabled; unlocking permanently spends points")
+		logger.Info("hint unlocking is enabled; calling the hint tool spends the listed points immediately")
 	}
 	if cfg.AllowDownload {
-		logger.Warn("attachment download is enabled", "sandbox", cfg.DownloadDir)
+		logger.Info("attachment download is enabled", "sandbox", cfg.DownloadDir)
 	}
 	if cfg.TokenLooksUnusual() {
 		logger.Warn(`the API token does not start with "ctfd_"; CTFd 3.x tokens normally do. If authentication fails, re-copy it from Settings > Access Tokens`)

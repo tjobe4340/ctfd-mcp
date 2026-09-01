@@ -3,9 +3,10 @@
 An MCP server that exposes a [CTFd](https://ctfd.io) capture-the-flag instance to an
 MCP client, from a **competitor's** point of view.
 
-It ships as a single static Go binary with no runtime dependencies. Everything
-irreversible — submitting flags, spending points on hints, writing files to disk —
-is **disabled by default** and must be turned on explicitly.
+It ships as a single static Go binary with no runtime dependencies. Flag submission,
+hint unlocks, and attachment downloads are **enabled by default**, because installing
+a competitor tool is an affirmative choice to play. They can each be disabled when a
+read-only setup is preferred.
 
 Verified against CTFd **3.6.x**, **3.7.x**, and **3.8.x** — see
 [version compatibility](#ctfd-version-compatibility).
@@ -19,9 +20,9 @@ tags, hints and their costs; solve counts and who solved what; the scoreboard, s
 history over time, and organizer announcements; any competitor's or team's public
 profile and solves.
 
-**Play** — submit flags, unlock hints, download challenge attachments into a sandbox
-directory. All three are **off by default** and each needs its own environment
-variable to enable.
+**Play** - submit flags, unlock hints, and download challenge attachments into a
+sandbox directory. All three work immediately; downloads go to `ctfd-downloads`
+beside the server's working directory unless you choose another location.
 
 **Learn** — read the organizers' official solutions once they unlock, and rate
 challenges with written feedback. *(CTFd 3.8+)*
@@ -50,7 +51,7 @@ What it does **not** do:
 | Auth | API token, username + password, or session cookie |
 | CTFd | 3.6.x, 3.7.x, 3.8.x |
 | Runtime deps | none — one static binary |
-| Enabled by default | reading only |
+| Enabled by default | all competitor features |
 
 ---
 
@@ -175,17 +176,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### Enabling flag submission
-
-Submission is off unless you ask for it. Add to the `env` block:
-
-```json
-{
-  "CTFD_ALLOW_SUBMIT": "true"
-}
-```
-
-### A fully-enabled configuration
+### Lite configuration with a custom download directory
 
 ```json
 {
@@ -196,9 +187,6 @@ Submission is off unless you ask for it. Add to the `env` block:
         "CTFD_URL": "https://ctf.example.com",
         "CTFD_TOKEN": "ctfd_your_token_here",
         "CTFD_LITE": "true",
-        "CTFD_ALLOW_SUBMIT": "true",
-        "CTFD_ALLOW_UNLOCK": "true",
-        "CTFD_ALLOW_DOWNLOAD": "true",
         "CTFD_DOWNLOAD_DIR": "/home/you/ctf/downloads",
         "CTFD_LOG_LEVEL": "info"
       }
@@ -263,11 +251,11 @@ challenge, work it, and submit a flag.
 
 | Tool | Writes? | What it does |
 | --- | --- | --- |
-| `ctfd_submit_flag` | **yes** | Submit a flag. Gated behind `CTFD_ALLOW_SUBMIT`. Supports `dry_run`. Refuses duplicates and exhausted attempt budgets. |
+| `ctfd_submit_flag` | **yes** | Submit a flag. Enabled by default; supports `dry_run` and refuses duplicates and exhausted attempt budgets. |
 | `ctfd_session_report` | no | What this process has submitted so far. Flags are stored hashed, never echoed. |
 | `ctfd_get_hint` | no | Read a hint. Free and already-unlocked hints return their content directly. |
-| `ctfd_unlock_hint` | **yes** | Unlock a hint. **Free hints need no gate and no confirmation** — there is nothing to spend. A hint that costs points keeps `CTFD_ALLOW_UNLOCK` and `confirm: true`. |
-| `ctfd_download_files` | **yes** | Save challenge attachments into a sandbox directory. Gated behind `CTFD_ALLOW_DOWNLOAD`. |
+| `ctfd_unlock_hint` | **yes** | Unlock a hint. Enabled by default; paid hints spend their listed points immediately when called. |
+| `ctfd_download_files` | **yes** | Save challenge attachments into a sandbox directory. Enabled by default, saving to `ctfd-downloads` unless configured otherwise. |
 | `ctfd_get_solution` | **yes** | *3.8+* — read the organizers' official writeup. Most unlock only after you solve the challenge. Free, but CTFd records that you viewed it, so revealing needs `unlock: true`. |
 | `ctfd_rate_challenge` | **yes** | *3.8+* — thumbs up or down plus optional written feedback. CTFd requires you to have solved it first. |
 | `ctfd_my_submissions` | no | Everything you have previously submitted, newest first. Where the event allows it, this includes **the exact strings you typed**; otherwise it falls back to your solve and failure history so you can still see what was attempted. |
@@ -306,12 +294,14 @@ difference is handled and pinned by a test.
 | Locked hint carries a `title` | no | yes | yes |
 | Challenge `attribution` (author) | no | yes | yes |
 | Scoreboard brackets/divisions | no | yes | yes |
-| `ctfd_get_solution`, `ctfd_rate_challenge`, `ctfd_my_submissions` | no | no | yes |
+| `ctfd_get_solution`, `ctfd_rate_challenge` | no | no | yes |
+| `ctfd_my_submissions` | solve/fail history fallback | solve/fail history fallback | full history when enabled; otherwise fallback |
 
 Where a field is absent it stays absent rather than rendering as `null`, an empty
 label, or a placeholder. Where an endpoint does not exist the tool explains the
-version requirement instead of surfacing a bare 404 — so pointing this at a 3.6
-instance costs you three tools, not a broken server.
+version requirement instead of surfacing a bare 404. `ctfd_my_submissions` remains
+useful on 3.6 and 3.7 by reconstructing your solve and failure history; only the
+raw submitted strings require the 3.8 endpoint and organizer permission.
 
 Two details worth knowing:
 
@@ -342,13 +332,13 @@ Plus exactly one credential set:
 | `CTFD_USERNAME` + `CTFD_PASSWORD` | `-username`, `-password` | Normal CTFd login. The server holds the session and manages CSRF nonces. |
 | `CTFD_SESSION` | `-session` | Session cookie value copied from a browser. |
 
-### Capability gates — all default to `false`
+### Capability controls - all default to `true`
 
 | Variable | Flag | Description |
 | --- | --- | --- |
-| `CTFD_ALLOW_SUBMIT` | `-allow-submit` | Permit flag submission. |
-| `CTFD_ALLOW_UNLOCK` | `-allow-unlock` | Permit spending points to unlock hints. Does not apply to free hints, which cost nothing. |
-| `CTFD_ALLOW_DOWNLOAD` | `-allow-download` | Permit writing attachments to disk. Requires `CTFD_DOWNLOAD_DIR`. |
+| `CTFD_ALLOW_SUBMIT` | `-allow-submit` | Set to `false` to disable flag submission. |
+| `CTFD_ALLOW_UNLOCK` | `-allow-unlock` | Set to `false` to disable spending points to unlock hints. |
+| `CTFD_ALLOW_DOWNLOAD` | `-allow-download` | Set to `false` to disable writing attachments to disk. |
 
 ### Profile
 
@@ -360,7 +350,7 @@ Plus exactly one credential set:
 
 | Variable | Flag | Default | Description |
 | --- | --- | --- | --- |
-| `CTFD_DOWNLOAD_DIR` | `-download-dir` | — | Sandbox directory for attachments. All writes are confined to it. |
+| `CTFD_DOWNLOAD_DIR` | `-download-dir` | `ctfd-downloads` | Sandbox directory for attachments. All writes are confined to it. Relative paths resolve from the server's working directory. |
 | `CTFD_MAX_DOWNLOAD_BYTES` | `-max-download-bytes` | 64 MiB | Per-attachment size cap. |
 | `CTFD_MAX_RESPONSE_BYTES` | `-max-response-bytes` | 32 MiB | Per-response size cap. |
 | `CTFD_TIMEOUT` | `-timeout` | `30s` | Per-request timeout. A bare number means seconds. |
@@ -382,10 +372,9 @@ Plus exactly one credential set:
 
 A CTF is a live, scored, adversarial event. Mistakes cost points and cannot be undone.
 
-**Irreversible actions are opt-in.** Flag submission, hint unlocking, and file writes
-each require their own environment variable. With none set, the server is strictly
-read-only, and the corresponding tools explain how to enable themselves rather than
-silently failing.
+**Core play actions are ready immediately.** Flag submission, hint unlocking, and
+file downloads are enabled by default. Set the corresponding `CTFD_ALLOW_*` variable
+to `false` only when you deliberately need a read-only or restricted setup.
 
 **Submissions are never retried.** CTFd records a failed attempt even when it answers
 `429 ratelimited` — the flag is never evaluated, but the attempt is spent. An
@@ -402,12 +391,10 @@ no attempts remain, nothing is sent. Because CTFd derives its `attempts` field f
 all submissions but enforces the limit against failures only, the two can disagree,
 so this refusal is overridable with `force: true`.
 
-**Paid hint unlocks need explicit confirmation.** `CTFD_ALLOW_UNLOCK` is not enough;
-`confirm: true` must be passed on the call itself. Without it, the tool reports the
-price instead of paying it. Gating is driven by the cost CTFd reports for that
-specific hint, not by an assumption about the event — so a **free** hint skips both
-the gate and the confirmation, while a hint that does cost points keeps every
-safeguard. If a hint's cost cannot be read, it is treated as paid.
+**Hints unlock on request.** `ctfd_unlock_hint` does not require a separate
+confirmation argument. A paid hint spends the cost CTFd reports as soon as the tool
+is called; set `CTFD_ALLOW_UNLOCK=false` if that is not appropriate for a deployment.
+Free hints remain available without a purchase.
 
 **Challenge content is treated as untrusted.** Descriptions, hints, and announcements
 are authored by event organizers — anyone who can write a challenge can write
@@ -417,9 +404,9 @@ labelled as untrusted data, so the boundary stays visible to the model.
 **Downloads are sandboxed.** Attachment URLs are pinned to the configured CTFd host
 (a challenge cannot redirect the client at an internal address), filenames are
 stripped of path separators and Windows device names, writes are confined to
-`CTFD_DOWNLOAD_DIR`, size is capped, and content is hashed. Downloads land via a
-temporary file, so an interrupted transfer never leaves a truncated file that looks
-complete. An existing file is never overwritten.
+the configured sandbox (by default `ctfd-downloads`), size is capped, and content is
+hashed. Downloads land via a temporary file, so an interrupted transfer never leaves
+a truncated file that looks complete. An existing file is never overwritten.
 
 **Credentials never reach the model or the logs.** Tokens, passwords, session
 cookies, and the signed `?token=` on attachment URLs are scrubbed centrally from
@@ -521,8 +508,8 @@ If it uses a self-signed certificate, set `CTFD_INSECURE_TLS=true`. This disable
 certificate verification, so only do it for an instance you control.
 
 **Submission says it is disabled.**
-That is the default. Set `CTFD_ALLOW_SUBMIT=true` and restart the MCP client so the
-server picks up the new environment.
+It was explicitly disabled. Remove `CTFD_ALLOW_SUBMIT=false` (or start with
+`-allow-submit=true`) and restart the MCP client so the server picks up the change.
 
 **Login fails with "CTFd rejected the username or password".**
 Try the same credentials in a browser. If they work there, check whether the account

@@ -2,6 +2,7 @@ package config
 
 import (
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,22 @@ func TestExplicitFalseFlagBeatsTruthyEnvironment(t *testing.T) {
 	}
 }
 
+func TestExplicitFalseEnvironmentDisablesEachCoreFeature(t *testing.T) {
+	t.Setenv("CTFD_URL", "https://x.example.com")
+	t.Setenv("CTFD_TOKEN", "ctfd_token0000000000000000")
+	t.Setenv("CTFD_ALLOW_SUBMIT", "false")
+	t.Setenv("CTFD_ALLOW_UNLOCK", "false")
+	t.Setenv("CTFD_ALLOW_DOWNLOAD", "false")
+
+	cfg, err := Load(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AllowSubmit || cfg.AllowUnlock || cfg.AllowDownload {
+		t.Errorf("explicit false values should disable every core feature: submit=%t unlock=%t download=%t", cfg.AllowSubmit, cfg.AllowUnlock, cfg.AllowDownload)
+	}
+}
+
 func TestBooleanEnvSpellings(t *testing.T) {
 	for _, v := range []string{"true", "1", "yes", "on", "enabled", "TRUE"} {
 		t.Run(v, func(t *testing.T) {
@@ -96,7 +113,7 @@ func TestBooleanEnvSpellings(t *testing.T) {
 			}
 		})
 	}
-	for _, v := range []string{"false", "0", "no", "off", "disabled", ""} {
+	for _, v := range []string{"false", "0", "no", "off", "disabled"} {
 		t.Run("off/"+v, func(t *testing.T) {
 			t.Setenv("CTFD_URL", "https://x.example.com")
 			t.Setenv("CTFD_TOKEN", "ctfd_token0000000000000000")
@@ -106,7 +123,7 @@ func TestBooleanEnvSpellings(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			if cfg.AllowSubmit {
-				t.Errorf("CTFD_ALLOW_SUBMIT=%q should leave submission disabled", v)
+				t.Errorf("CTFD_ALLOW_SUBMIT=%q should disable submission", v)
 			}
 		})
 	}
@@ -158,12 +175,6 @@ func TestValidationRejectsBadConfigurations(t *testing.T) {
 			wantErr: "per-page must be between 1 and 100",
 		},
 		{
-			name:    "download enabled without a directory",
-			env:     map[string]string{"CTFD_URL": "https://x.example.com", "CTFD_TOKEN": "ctfd_a000000000000000"},
-			args:    []string{"-allow-download"},
-			wantErr: "no download directory",
-		},
-		{
 			name:    "bad log level",
 			env:     map[string]string{"CTFD_URL": "https://x.example.com", "CTFD_TOKEN": "ctfd_a000000000000000"},
 			args:    []string{"-log-level", "chatty"},
@@ -173,7 +184,7 @@ func TestValidationRejectsBadConfigurations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear everything the loader reads so cases stay independent.
-			for _, k := range []string{"CTFD_URL", "CTFD_TOKEN", "CTFD_SESSION", "CTFD_PER_PAGE", "CTFD_ALLOW_SUBMIT", "CTFD_TIMEOUT", "CTFD_DOWNLOAD_DIR", "CTFD_LOG_LEVEL"} {
+			for _, k := range []string{"CTFD_URL", "CTFD_TOKEN", "CTFD_SESSION", "CTFD_PER_PAGE", "CTFD_ALLOW_SUBMIT", "CTFD_ALLOW_UNLOCK", "CTFD_ALLOW_DOWNLOAD", "CTFD_TIMEOUT", "CTFD_DOWNLOAD_DIR", "CTFD_LOG_LEVEL"} {
 				t.Setenv(k, "")
 			}
 			for k, v := range tc.env {
@@ -257,23 +268,29 @@ func TestIncompleteOrConflictingCredentials(t *testing.T) {
 	}
 }
 
-func TestDefaultsAreSafe(t *testing.T) {
+func TestDefaultsEnableCoreFeaturesAndKeepTLSVerification(t *testing.T) {
 	t.Setenv("CTFD_URL", "https://x.example.com")
 	t.Setenv("CTFD_TOKEN", "ctfd_token0000000000000000")
+	t.Setenv("CTFD_ALLOW_SUBMIT", "")
+	t.Setenv("CTFD_ALLOW_UNLOCK", "")
+	t.Setenv("CTFD_ALLOW_DOWNLOAD", "")
+	t.Setenv("CTFD_DOWNLOAD_DIR", "")
 
 	cfg, err := Load(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	// Everything irreversible must be off unless explicitly enabled.
-	if cfg.AllowSubmit {
-		t.Error("flag submission must default to disabled")
+	if !cfg.AllowSubmit {
+		t.Error("flag submission must default to enabled")
 	}
-	if cfg.AllowUnlock {
-		t.Error("hint unlocking must default to disabled")
+	if !cfg.AllowUnlock {
+		t.Error("hint unlocking must default to enabled")
 	}
-	if cfg.AllowDownload {
-		t.Error("attachment download must default to disabled")
+	if !cfg.AllowDownload {
+		t.Error("attachment download must default to enabled")
+	}
+	if !filepath.IsAbs(cfg.DownloadDir) || filepath.Base(cfg.DownloadDir) != DefaultDownloadDir {
+		t.Errorf("download directory = %q, want a resolved %q directory", cfg.DownloadDir, DefaultDownloadDir)
 	}
 	if cfg.InsecureTLS {
 		t.Error("TLS verification must default to enabled")
