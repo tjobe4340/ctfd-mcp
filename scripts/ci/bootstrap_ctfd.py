@@ -90,7 +90,7 @@ def wait_for_setup(opener: urllib.request.OpenerDirector) -> bytes:
                 if status == 200:
                     return body
                 last_error = f"HTTP {status}"
-        except (urllib.error.HTTPError, urllib.error.URLError) as error:
+        except (OSError, urllib.error.HTTPError, urllib.error.URLError) as error:
             # Connection errors and a transient reverse-proxy response are
             # normal while a freshly started CTFd image is initializing.
             last_error = str(error.reason if hasattr(error, "reason") else error)
