@@ -176,8 +176,8 @@ def main() -> None:
             "user_mode": "users",
             # The smoke player must be inside the CTF window, while the dates
             # remain stable regardless of when CI runs.
-            "start": "2000-01-01T00:00:00",
-            "end": "2100-01-01T00:00:00",
+            "start": "946684800",  # 2000-01-01T00:00:00Z
+            "end": "4102444800",  # 2100-01-01T00:00:00Z
             "challenge_visibility": "public",
             "account_visibility": "public",
             "score_visibility": "public",
