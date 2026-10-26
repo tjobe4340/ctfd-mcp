@@ -57,7 +57,7 @@ What it does **not** do:
 
 ## Quick start
 
-You need a CTFd URL, an API token from that CTFd instance, and Go 1.25 or newer to
+You need a CTFd URL, an API token from that CTFd instance, and Go 1.26.10 or newer to
 build the binary. Create the token in CTFd at **Settings → Access Tokens → Generate**.
 API-token authentication is the recommended path: it avoids browser session expiry and
 CSRF handling.
@@ -110,7 +110,7 @@ directory, continue with [Configure your MCP client](#configure-your-mcp-client)
 
 ## Install
 
-Requires Go 1.25 or newer to build.
+Requires Go 1.26.10 or newer to build.
 
 ```bash
 go build -trimpath -ldflags "-s -w" -o bin/ctfd-mcp ./cmd/ctfd-mcp
